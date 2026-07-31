@@ -1,0 +1,21 @@
+# Credentials -- never commit these
+.env
+.env.*
+!.env.example
+credentials.json
+
+# Captured API responses (regenerate with scripts/explore_opensky.py)
+data/samples/
+
+# Scratch experiments; temp.ipynb carries ~2.6 MB of embedded output
+temp.ipynb
+temp.py
+.ipynb_checkpoints/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
