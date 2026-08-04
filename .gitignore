@@ -7,6 +7,9 @@ credentials.json
 # Captured API responses (regenerate with scripts/explore_opensky.py)
 data/samples/
 
+# Bronze layer -- raw captures, created at runtime by the ingest package
+data/bronze/
+
 # Scratch experiments; temp.ipynb carries ~2.6 MB of embedded output
 temp.ipynb
 temp.py
@@ -19,3 +22,21 @@ __pycache__/
 .venv/
 venv/
 *.egg-info/
+
+# dbt
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+.user.yml
+
+# Airflow
+airflow.db
+airflow-webserver.cookie
+dags/__pycache__/
+logs/
+standalone_admin_password.txt
+
+# Build artefacts
+build/
+dist/
+.ruff_cache/

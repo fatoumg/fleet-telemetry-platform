@@ -1,0 +1,40 @@
+# Install once:  pre-commit install
+# Run manually:  pre-commit run --all-files
+
+repos:
+  # Keep this rev in step with the ruff pin in pyproject.toml [dev]. Skew means the hook and
+  # a local `ruff check` disagree -- 0.12 still enforced UP038, which 0.16 removed because
+  # `isinstance(x, X | Y)` is both slower and misleading.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.1
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        # dbt/profiles.yml uses Jinja, which is not valid YAML to a strict parser.
+        exclude: ^dbt/profiles\.yml$
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        # Bronze captures are git-ignored, but a stray sample must not slip through.
+        args: [--maxkb=512]
+
+  # Credentials are the main risk in this repo: three sources, three secrets, and a .env
+  # that exists locally. detect-secrets fails the commit rather than trusting .gitignore.
+  #
+  # .secrets.baseline allowlists 7 known-benign hits: throwaway CI database passwords and
+  # test fixture strings. Any *new* finding still fails the commit. Refresh it with
+  # `detect-secrets scan --baseline .secrets.baseline`.
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: [--baseline, .secrets.baseline]
+        exclude: ^(\.env\.example|data/samples/.*)$

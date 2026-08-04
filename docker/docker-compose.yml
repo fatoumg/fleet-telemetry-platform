@@ -1,0 +1,45 @@
+# Analytics warehouse (spec phase 1).
+#
+# Postgres + PostGIS + TimescaleDB, all three required by the data model:
+#   PostGIS      -- GEOMETRY(POINT,4326), GIST indexes, ST_DWithin
+#   TimescaleDB  -- fact_flight_trajectory as a hypertable partitioned by flight_ts
+#
+# The timescaledb-ha image bundles PostGIS, so one container covers both.
+#
+# Airflow gets its own compose file and its own metadata database (phase 6). Airflow
+# metadata must never share this warehouse -- a scheduler bug should not be able to
+# corrupt analytics data, and the two have completely different backup needs.
+#
+#   docker compose -f docker/docker-compose.yml up -d
+#   docker compose -f docker/docker-compose.yml logs -f warehouse
+
+name: aviation-conflict
+
+services:
+  warehouse:
+    image: timescale/timescaledb-ha:pg16
+    container_name: aca-warehouse
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${WAREHOUSE_DB:-aviation}
+      POSTGRES_USER: ${WAREHOUSE_USER:-aviation}
+      POSTGRES_PASSWORD: ${WAREHOUSE_PASSWORD:-aviation}
+      # Keeps timestamps unambiguous; every source timestamp is UTC epoch seconds.
+      TZ: UTC
+      PGTZ: UTC
+    ports:
+      - "${WAREHOUSE_PORT:-5432}:5432"
+    volumes:
+      - warehouse_data:/home/postgres/pgdata/data
+      # Runs once, only when the data directory is empty.
+      - ./warehouse/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${WAREHOUSE_USER:-aviation} -d ${WAREHOUSE_DB:-aviation}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+volumes:
+  warehouse_data:
+    name: aca-warehouse-data

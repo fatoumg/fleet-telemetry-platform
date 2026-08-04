@@ -1,0 +1,13 @@
+# Normalise line endings so a Windows checkout and a Linux CI runner agree.
+# Without this, every file committed from Windows shows as wholly modified in CI diffs.
+* text=auto eol=lf
+
+# Scripts that must stay LF even on Windows -- they run inside Linux containers.
+*.sh            text eol=lf
+docker/**/*.sql text eol=lf
+
+# Captured API responses: treat as data, keep diffs out of review.
+data/**/*.json  -diff linguist-generated
+
+# Notebooks carry large embedded output; never try to merge them.
+*.ipynb         -diff -merge

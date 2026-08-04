@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # No API credentials in CI. Every test must run offline -- the suite asserts this by
+  # passing explicit env mappings rather than reading the process environment.
+  PYTHON_VERSION: "3.13"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install ruff
+      - run: ruff check .
+      - run: ruff format --check .
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: pytest
+
+  dbt:
+    runs-on: ubuntu-latest
+    services:
+      # PostGIS image rather than plain postgres: the models use GEOMETRY columns and
+      # ST_DWithin, so a build against vanilla Postgres would pass while the real one fails.
+      # TimescaleDB is absent here; hypertable creation must therefore be guarded so `dbt
+      # build` succeeds without it.
+      warehouse:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_DB: aviation
+          POSTGRES_USER: aviation
+          POSTGRES_PASSWORD: aviation
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      WAREHOUSE_HOST: localhost
+      WAREHOUSE_PORT: "5432"
+      WAREHOUSE_DB: aviation
+      WAREHOUSE_USER: aviation
+      WAREHOUSE_PASSWORD: aviation
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -e ".[warehouse]"
+
+      - name: Create medallion schemas
+        run: |
+          PGPASSWORD=aviation psql -h localhost -U aviation -d aviation \
+            -c "CREATE SCHEMA IF NOT EXISTS bronze;" \
+            -c "CREATE SCHEMA IF NOT EXISTS silver;" \
+            -c "CREATE SCHEMA IF NOT EXISTS gold;" \
+            -c "CREATE SCHEMA IF NOT EXISTS marts;"
+
+      - name: dbt parse
+        run: dbt parse --project-dir dbt --profiles-dir dbt --target ci
+
+      # Runs models and every test, including the grain assertions. Fan-out is invisible
+      # without them, so this is the step that actually protects the numbers.
+      - name: dbt build
+        run: dbt build --project-dir dbt --profiles-dir dbt --target ci

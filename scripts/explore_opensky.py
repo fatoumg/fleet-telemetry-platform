@@ -20,7 +20,7 @@ import json
 import sys
 import time
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -96,9 +96,7 @@ def authenticate(session: requests.Session) -> bool:
 
     client_id, client_secret = creds.get("clientId"), creds.get("clientSecret")
     if not client_id or not client_secret:
-        print(
-            f"{CREDENTIALS_PATH.name} lacks clientId/clientSecret -- running anonymously"
-        )
+        print(f"{CREDENTIALS_PATH.name} lacks clientId/clientSecret -- running anonymously")
         return False
 
     try:
@@ -358,7 +356,7 @@ def describe_enum(rows: list[list[Any]], index: int, name: str, mapping: dict[in
     print(f"\n  {name} distribution (index {index}):")
     for value, count in counts.most_common():
         label = mapping.get(value, "<undocumented value>") if value is not None else "null"
-        print(f"    {str(value):>5} = {label:<45} {count:>6} rows")
+        print(f"    {value!s:>5} = {label:<45} {count:>6} rows")
 
 
 def describe_state_vectors(
@@ -409,12 +407,8 @@ def _report_altitude_disagreement(rows: list[list[Any]]) -> None:
     )
     print("       barometric altitude, so geo_altitude cannot substitute for a missing baro value")
 
-    only_geo = sum(
-        1 for row in rows if len(row) > 13 and row[7] is None and row[13] is not None
-    )
-    both_null = sum(
-        1 for row in rows if len(row) > 13 and row[7] is None and row[13] is None
-    )
+    only_geo = sum(1 for row in rows if len(row) > 13 and row[7] is None and row[13] is not None)
+    both_null = sum(1 for row in rows if len(row) > 13 and row[7] is None and row[13] is None)
     print(
         f"    aircraft with geo but no baro: {only_geo}; with neither altitude: {both_null} "
         f"(the latter cannot be tested for vertical separation at all)"
@@ -449,11 +443,7 @@ def _report_timestamp_skew(rows: list[list[Any]], snapshot: int | None) -> None:
     """
     if not rows or snapshot is None:
         return
-    aged = [
-        (snapshot - row[3], row)
-        for row in rows
-        if len(row) > 3 and row[3] is not None
-    ]
+    aged = [(snapshot - row[3], row) for row in rows if len(row) > 3 and row[3] is not None]
     if not aged:
         return
 
@@ -505,8 +495,15 @@ def _report_dataframe(rows: list[list[Any]]) -> None:
 
     numeric_cols = [
         c
-        for c in ("longitude", "latitude", "baro_altitude", "geo_altitude", "velocity",
-                  "true_track", "vertical_rate")
+        for c in (
+            "longitude",
+            "latitude",
+            "baro_altitude",
+            "geo_altitude",
+            "velocity",
+            "true_track",
+            "vertical_rate",
+        )
         if c in frame
     ]
     if numeric_cols:
@@ -580,9 +577,7 @@ def describe_flights(payload: list[dict[str, Any]], label: str) -> None:
     for line in json.dumps(payload[0], indent=2).splitlines():
         print(f"    {line}")
 
-    airports = Counter(
-        f.get("estArrivalAirport") for f in payload if f.get("estArrivalAirport")
-    )
+    airports = Counter(f.get("estArrivalAirport") for f in payload if f.get("estArrivalAirport"))
     unresolved = sum(1 for f in payload if not f.get("estArrivalAirport"))
     print(
         f"\n  estArrivalAirport: {len(airports)} distinct resolved, {unresolved} unresolved "
@@ -593,7 +588,7 @@ def describe_flights(payload: list[dict[str, Any]], label: str) -> None:
 def _fmt_epoch(value: Any) -> str:
     if not isinstance(value, (int, float)):
         return "n/a"
-    return datetime.fromtimestamp(int(value), tz=timezone.utc).isoformat()
+    return datetime.fromtimestamp(int(value), tz=UTC).isoformat()
 
 
 # --------------------------------------------------------------------------------------
@@ -813,9 +808,7 @@ def _print_summary(
         for family, values in groups.items():
             trend = " -> ".join(str(v) for v in values)
             print(f"    {family:<12} {trend}")
-        print(
-            "    note: these are SEPARATE counters, not one shared pool -- do not compare across"
-        )
+        print("    note: these are SEPARATE counters, not one shared pool -- do not compare across")
         print("          families or treat the header as a single global budget")
     print("    note: 403 responses carry no X-Rate-Limit-Remaining header at all")
 
@@ -844,7 +837,9 @@ def save_sample(record: dict[str, Any]) -> None:
     SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
     payload = record["json"] if record["json"] is not None else record.get("text_body")
     (SAMPLES_DIR / f"{record['name']}.json").write_text(
-        json.dumps({"_probe": _metadata(record), "response": payload}, indent=2, ensure_ascii=False),
+        json.dumps(
+            {"_probe": _metadata(record), "response": payload}, indent=2, ensure_ascii=False
+        ),
         encoding="utf-8",
     )
 

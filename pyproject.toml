@@ -1,0 +1,91 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aviation-conflict-analytics"
+version = "0.1.0"
+description = "Measures how geopolitical conflict changes commercial aviation behaviour, isolating weather and day-of-week confounders"
+readme = "README.md"
+requires-python = ">=3.13"
+
+# Runtime deps for the Extract/Load half only. Transform is dbt (SQL), orchestration is
+# Airflow -- both are extras, because neither is needed to run ingestion.
+dependencies = [
+    "requests>=2.32",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+# Phase 3. ERA5 ships GRIB/NetCDF, not JSON, so reading it needs the scientific stack.
+era5 = [
+    "cdsapi>=0.7",
+    "xarray>=2024.1",
+    "netCDF4>=1.6",
+]
+# Phase 1-2. Warehouse loading and transforms.
+warehouse = [
+    "psycopg[binary]>=3.2",
+    "dbt-postgres>=1.8",
+]
+# Phase 6. Pinned to Airflow 3.x; the 2.x -> 3.x task API differs.
+airflow = [
+    "apache-airflow>=3.0,<4.0",
+]
+dev = [
+    "pytest>=8.0",
+    # Keep in step with the ruff-pre-commit rev in .pre-commit-config.yaml, or the hook and a
+    # local `ruff check` will disagree about which rules exist.
+    "ruff>=0.16",
+    "pre-commit>=3.7",
+    "detect-secrets>=1.5",
+    "pandas>=2.2",        # used by the exploration scripts for schema profiling
+]
+
+[project.scripts]
+aca-config = "aviation_conflict.config:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aviation_conflict"]
+
+# --------------------------------------------------------------------------------------
+# ruff
+# --------------------------------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "UP",       # pyupgrade
+    "B",        # bugbear
+    "SIM",      # simplify
+    "PTH",      # prefer pathlib
+    "RUF",
+]
+ignore = [
+    "E501",  # line length is enforced by the formatter, not the linter
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Exploration scripts print findings as their entire purpose.
+"scripts/*" = ["T201"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+# --------------------------------------------------------------------------------------
+# pytest
+# --------------------------------------------------------------------------------------
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "network: hits a live API; deselect with -m 'not network'",
+]

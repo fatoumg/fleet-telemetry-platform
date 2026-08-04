@@ -96,8 +96,13 @@ def test_coordinates_are_null_or_in_range(states: list[list]) -> None:
 
 def test_nullable_fields_are_actually_nullable(states: list[list]) -> None:
     """The doc claims these are nullable; confirm that against real data, not the spec."""
-    nullable = {7: "baro_altitude", 11: "vertical_rate", 12: "sensors", 13: "geo_altitude",
-                14: "squawk"}
+    nullable = {
+        7: "baro_altitude",
+        11: "vertical_rate",
+        12: "sensors",
+        13: "geo_altitude",
+        14: "squawk",
+    }
     observed = {
         name: sum(1 for row in states if row[index] is None) for index, name in nullable.items()
     }

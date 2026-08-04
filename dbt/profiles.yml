@@ -1,0 +1,39 @@
+# dbt connection profile.
+#
+# Safe to commit: every value is an env_var reference, so no credential lives here. The
+# defaults match docker/docker-compose.yml, so a local `docker compose up` needs no .env
+# entries at all -- only a non-default setup does.
+#
+# Point dbt at this directory explicitly:
+#   dbt build --project-dir dbt --profiles-dir dbt
+
+aviation_conflict:
+  target: dev
+
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('WAREHOUSE_HOST', 'localhost') }}"
+      port: "{{ env_var('WAREHOUSE_PORT', '5432') | int }}"
+      dbname: "{{ env_var('WAREHOUSE_DB', 'aviation') }}"
+      user: "{{ env_var('WAREHOUSE_USER', 'aviation') }}"
+      password: "{{ env_var('WAREHOUSE_PASSWORD', 'aviation') }}"
+      # dbt writes to silver/gold/marts; bronze is owned by the Python loader.
+      schema: silver
+      threads: 4
+      keepalives_idle: 0
+      # Fail fast rather than hanging a DAG task on an unreachable warehouse.
+      connect_timeout: 10
+      sslmode: prefer
+
+    # Used by CI against a throwaway Postgres service container.
+    ci:
+      type: postgres
+      host: "{{ env_var('WAREHOUSE_HOST', 'localhost') }}"
+      port: "{{ env_var('WAREHOUSE_PORT', '5432') | int }}"
+      dbname: "{{ env_var('WAREHOUSE_DB', 'aviation') }}"
+      user: "{{ env_var('WAREHOUSE_USER', 'aviation') }}"
+      password: "{{ env_var('WAREHOUSE_PASSWORD', 'aviation') }}"
+      schema: silver
+      threads: 4
+      connect_timeout: 10
