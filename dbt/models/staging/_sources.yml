@@ -3,7 +3,10 @@ version: 2
 # Bronze tables, owned by the Python loader (src/aviation_conflict/load/), not by dbt.
 # Declared here so Silver models reference them via source() and appear in the lineage graph.
 #
-# Tables land in phase 1; these declarations are inert until a model selects from them.
+# Tables land in phase 1. Until then these are documentation only -- deliberately with no
+# `tests:` keys, because `dbt build` runs source tests eagerly and a not_null test against a
+# table that does not exist yet fails the build rather than reporting anything useful. Column
+# tests get added in phase 1, in the same change that creates the tables they check.
 
 sources:
   - name: bronze
@@ -23,17 +26,14 @@ sources:
         columns:
           - name: captured_at
             description: When this snapshot was fetched. Not the aircraft position time.
-            tests: [not_null]
           - name: payload
             description: Verbatim response body, `{time, states[]}`.
-            tests: [not_null]
           - name: sampling_interval_seconds
             description: >
               Polling interval in force for this capture. Load-bearing, not metadata: ADI is a
               ratio of observed to baseline computed from the same source, so a systematic
               undercount cancels only while the interval is constant. A change here
               invalidates cross-period comparison.
-            tests: [not_null]
 
       - name: raw_acled_events
         description: >
@@ -57,7 +57,7 @@ sources:
           - name: era5_grid_cell
             description: 0.25-degree cell identifier. Sixteen of these per 1-degree analysis cell.
           - name: observation_ts
-            tests: [not_null]
+            description: Hourly observation time, UTC.
           - name: pressure_level_hpa
             description: >
               NULL for single-level (surface) variables, 250 for winds aloft. Surface wind at

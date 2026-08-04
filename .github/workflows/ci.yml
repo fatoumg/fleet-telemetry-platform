@@ -59,7 +59,10 @@ jobs:
           --health-retries 10
 
     env:
-      WAREHOUSE_HOST: localhost
+      # 127.0.0.1 rather than localhost, matching dbt/profiles.yml -- see the note there.
+      WAREHOUSE_HOST: 127.0.0.1
+      # The service container publishes 5432 here, unlike the local compose stack which uses
+      # 55432 to dodge a crowded host. Set explicitly so the profile default does not apply.
       WAREHOUSE_PORT: "5432"
       WAREHOUSE_DB: aviation
       WAREHOUSE_USER: aviation

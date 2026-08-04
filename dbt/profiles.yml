@@ -6,6 +6,13 @@
 #
 # Point dbt at this directory explicitly:
 #   dbt build --project-dir dbt --profiles-dir dbt
+#
+# Host is 127.0.0.1, not localhost, on purpose. Docker Desktop on Windows publishes the port
+# on both stacks but does not forward IPv6; `localhost` resolves to ::1 first and dbt does not
+# fall back to IPv4, failing with "could not receive data from server" rather than anything
+# that points at the real cause.
+#
+# Port 55432 matches docker-compose.yml -- see the comment there for why not 5432.
 
 aviation_conflict:
   target: dev
@@ -13,8 +20,8 @@ aviation_conflict:
   outputs:
     dev:
       type: postgres
-      host: "{{ env_var('WAREHOUSE_HOST', 'localhost') }}"
-      port: "{{ env_var('WAREHOUSE_PORT', '5432') | int }}"
+      host: "{{ env_var('WAREHOUSE_HOST', '127.0.0.1') }}"
+      port: "{{ env_var('WAREHOUSE_PORT', '55432') | int }}"
       dbname: "{{ env_var('WAREHOUSE_DB', 'aviation') }}"
       user: "{{ env_var('WAREHOUSE_USER', 'aviation') }}"
       password: "{{ env_var('WAREHOUSE_PASSWORD', 'aviation') }}"
@@ -29,8 +36,8 @@ aviation_conflict:
     # Used by CI against a throwaway Postgres service container.
     ci:
       type: postgres
-      host: "{{ env_var('WAREHOUSE_HOST', 'localhost') }}"
-      port: "{{ env_var('WAREHOUSE_PORT', '5432') | int }}"
+      host: "{{ env_var('WAREHOUSE_HOST', '127.0.0.1') }}"
+      port: "{{ env_var('WAREHOUSE_PORT', '55432') | int }}"
       dbname: "{{ env_var('WAREHOUSE_DB', 'aviation') }}"
       user: "{{ env_var('WAREHOUSE_USER', 'aviation') }}"
       password: "{{ env_var('WAREHOUSE_PASSWORD', 'aviation') }}"

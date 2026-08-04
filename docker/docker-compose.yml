@@ -28,7 +28,18 @@ services:
       TZ: UTC
       PGTZ: UTC
     ports:
-      - "${WAREHOUSE_PORT:-5432}:5432"
+      # Host port 55432, deliberately far from 5432.
+      #
+      # 5432 is taken by a locally installed PostgreSQL service, and 5433/5435/5436 by other
+      # Docker stacks. Worse, Windows lets a container bind a port a host service already
+      # holds: both listen, clients silently reach the *host* server, and the symptom is
+      # "password authentication failed for user aviation" -- which reads as a credentials
+      # bug, not a port collision. That cost real debugging time; hence a port nothing else
+      # plausibly wants.
+      #
+      # Container-side stays 5432, so nothing inside the compose network changes. Override
+      # with WAREHOUSE_PORT if 55432 is somehow taken too.
+      - "${WAREHOUSE_PORT:-55432}:5432"
     volumes:
       - warehouse_data:/home/postgres/pgdata/data
       # Runs once, only when the data directory is empty.
