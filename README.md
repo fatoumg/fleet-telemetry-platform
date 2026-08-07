@@ -72,27 +72,49 @@ dags/              Airflow DAGs (phase 6)
 tests/
 ```
 
-`app/` and `simulator/` arrive in phase 0.
-
 ## Setup
 
-There are **no credentials to obtain.** This project calls no external APIs — every setting
-has a built-in default matching the compose file, so a fresh clone runs with no `.env`.
+There are **no credentials to obtain.** This project calls no external APIs — every setting has
+a built-in default matching the compose file, so a fresh clone runs with no `.env`.
+
+You need Docker and Python 3.13.
 
 ```bash
-pip install -e ".[dev]"              # or: uv sync --extra dev
+pip install -e ".[app,dev]"          # or: uv sync --extra app --extra dev
+pre-commit install                   # ruff, secret scanning; without this the hooks never run
+docker compose -f docker/docker-compose.yml up -d
 python -m fleet_telemetry.config     # shows what resolved, and what fell back to defaults
 pytest
 ```
 
-Bring up the warehouse:
+If all five succeed you have a working environment. Then start with
+[docs/learn/](docs/learn/README.md).
 
-```bash
-docker compose -f docker/docker-compose.yml up -d
-```
+**Extras arrive with the phase that needs them**, so the install above is deliberately not
+everything: `[warehouse]` (dbt, Kafka client) lands in phase 2, `[airflow]` in phase 4. `[dev]`
+alone is not enough to run the tests — the suite imports the application, so `[app]` is required
+too.
 
-`init.sql` creates the PostGIS and TimescaleDB extensions plus one schema per medallion layer
-(`bronze`, `silver`, `gold`, `marts`).
+Two containers come up: `oltp` (the source system, port 55433) and `warehouse`
+(PostGIS + TimescaleDB, port 55432). The ports are deliberately odd — see the comments in
+[docker-compose.yml](docker/docker-compose.yml) for the Windows port-collision reason.
+
+## Working on this together
+
+Phases are **sequential** — you cannot transform data you have not yet ingested — so two people
+cannot simply take a phase each. What works:
+
+- Split *within* a phase. Phase 2, for example, is a batch poller and a CDC pipeline that are
+  built separately and then compared.
+- One builds, the other writes the `docs/learn/` guide and the tests for it. The guide is not
+  documentation-after-the-fact here; explaining the thing is how you find out whether you
+  understood it.
+
+Branch from `main`, one branch per phase or per slice: `phase-2/batch-poller`. Keep `main` green
+— it is what a newcomer clones.
+
+Before pushing: `ruff check . && pytest`. The pre-commit hooks cover the same ground, which is
+why `pre-commit install` is in the setup list rather than optional.
 
 ## Configuration
 

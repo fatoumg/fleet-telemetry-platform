@@ -56,13 +56,14 @@ depended on three, and died when the first one refused access; see
 [docs/archive/](../archive/README.md).)
 
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[app,dev]"          # [dev] alone cannot run the tests -- they import the app
+pre-commit install                   # without this the hooks never run
+docker compose -f docker/docker-compose.yml up -d
 python -m fleet_telemetry.config     # shows what resolved; nothing should be missing
 pytest
-docker compose -f docker/docker-compose.yml up -d
 ```
 
-If all four succeed, you are ready for Phase 1.
+If all five succeed, you are ready for Phase 1.
 
 ## Vocabulary you will meet
 
