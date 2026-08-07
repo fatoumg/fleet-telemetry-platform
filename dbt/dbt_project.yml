@@ -1,8 +1,8 @@
-name: aviation_conflict
+name: fleet_telemetry
 version: 0.1.0
 config-version: 2
 
-profile: aviation_conflict
+profile: fleet_telemetry
 
 model-paths: ["models"]
 seed-paths: ["seeds"]
@@ -13,7 +13,7 @@ target-path: target
 clean-targets: ["target", "dbt_packages"]
 
 models:
-  aviation_conflict:
+  fleet_telemetry:
     # One schema per medallion layer, matching docker/warehouse/init.sql. Layer names are
     # absolute (+schema with a custom generate_schema_name macro would prefix them).
     staging:
@@ -29,29 +29,48 @@ models:
       +materialized: table
 
 seeds:
-  aviation_conflict:
+  fleet_telemetry:
     +schema: silver
 
 # Applied to every model so a failing test blocks the build rather than warning into a log
 # nobody reads. Grain assertions are the reason this is `error`: fan-out silently inflates
 # every downstream number, so it must break the pipeline.
 tests:
-  aviation_conflict:
+  fleet_telemetry:
     +severity: error
 
 vars:
-  # Analysis parameters, deliberately Gold-layer configuration rather than constants.
-  # Spec section 9 defends 25 km from a 10-100 km threat range, which concedes it is a
-  # judgment call -- so changing it must cost one mart rebuild, not a Silver reprocess.
-  conflict_buffer_km: 25
-  exposure_window_hours: 12
+  # ------------------------------------------------------------------------------------
+  # Lateness policy -- the core of phase 4
+  # ------------------------------------------------------------------------------------
 
-  # ADI denominator guard. Below this baseline, ADI is NULL with a reason code rather than a
-  # number: a true baseline of 0.4 would divide by ~0, and a baseline of 1 swings ADI by
-  # +/-100% on a single aircraft. Low-traffic airspace is exactly where conflicts happen.
-  min_baseline_flights: 20
+  # How late an event may arrive and still be folded into its true event-time window.
+  # Beyond this it goes to quarantine rather than being dropped: a silent discard is how an
+  # undercount becomes invisible.
+  lateness_bound_hours: 6
 
-  # Rolling baseline window, and the gap before a conflict that keeps the baseline
-  # uncontaminated by the event it is meant to be a counterfactual for.
-  baseline_window_days: 30
-  baseline_lag_days: 30
+  # How far back incremental models rebuild on each run.
+  #
+  # MUST EXCEED lateness_bound_hours. If the lookback is shorter, an event that arrives
+  # within the accepted bound still lands outside the window being rebuilt, and is silently
+  # lost -- the pipeline reports success and the number is quietly wrong. This is the
+  # single easiest way to break this project.
+  incremental_lookback_days: 3
+
+  # ------------------------------------------------------------------------------------
+  # Trip reconstruction
+  # ------------------------------------------------------------------------------------
+
+  # Gap between consecutive pings that ends a trip rather than counting as a pause.
+  trip_gap_minutes: 15
+
+  # A vehicle reporting but not moving further than this is stationary, not travelling.
+  stationary_speed_kmh: 3
+
+  # ------------------------------------------------------------------------------------
+  # Coverage guard
+  # ------------------------------------------------------------------------------------
+
+  # Below this share of expected pings in an hour, the cell reads "no data" rather than
+  # "no activity". Sequence-number gaps make this measurable rather than inferred.
+  min_reporting_coverage: 0.6

@@ -47,9 +47,9 @@ jobs:
       warehouse:
         image: postgis/postgis:16-3.4
         env:
-          POSTGRES_DB: aviation
-          POSTGRES_USER: aviation
-          POSTGRES_PASSWORD: aviation
+          POSTGRES_DB: telemetry
+          POSTGRES_USER: telemetry
+          POSTGRES_PASSWORD: telemetry
         ports:
           - 5432:5432
         options: >-
@@ -64,9 +64,9 @@ jobs:
       # The service container publishes 5432 here, unlike the local compose stack which uses
       # 55432 to dodge a crowded host. Set explicitly so the profile default does not apply.
       WAREHOUSE_PORT: "5432"
-      WAREHOUSE_DB: aviation
-      WAREHOUSE_USER: aviation
-      WAREHOUSE_PASSWORD: aviation
+      WAREHOUSE_DB: telemetry
+      WAREHOUSE_USER: telemetry
+      WAREHOUSE_PASSWORD: telemetry
 
     steps:
       - uses: actions/checkout@v4
@@ -78,7 +78,7 @@ jobs:
 
       - name: Create medallion schemas
         run: |
-          PGPASSWORD=aviation psql -h localhost -U aviation -d aviation \
+          PGPASSWORD=telemetry psql -h localhost -U telemetry -d telemetry \
             -c "CREATE SCHEMA IF NOT EXISTS bronze;" \
             -c "CREATE SCHEMA IF NOT EXISTS silver;" \
             -c "CREATE SCHEMA IF NOT EXISTS gold;" \

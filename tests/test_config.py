@@ -1,117 +1,112 @@
-"""Guards on credential resolution.
+"""Guards on configuration resolution.
 
-Two properties matter here and neither is visible from reading the happy path:
+Three properties matter here and none is visible from reading the happy path:
 
-  * precedence -- an environment variable must beat the legacy `credentials.json`, or a CI
-    override silently does nothing;
-  * secrets never leak -- `describe()` output lands in terminals and CI logs.
+  * precedence -- an environment variable must beat the built-in default, or a CI override
+    silently does nothing;
+  * defaults are honest -- a value that fell back must report itself as defaulted, because a
+    default password outside local development is a finding, not a detail;
+  * secrets never leak -- `describe()` output lands in terminals and CI logs, and a DSN
+    carries a password in the middle of a URL where it is easy to print by accident.
 
-Offline, and hermetic: every test passes an explicit env mapping and tmp_path root, so the
-developer's real `.env` can neither influence a result nor be read by the suite.
+Offline and hermetic: every test passes an explicit env mapping, so the developer's real
+`.env` can neither influence a result nor be read by the suite.
 """
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import pytest
 
-from aviation_conflict import config
-
-
-@pytest.fixture
-def legacy_json(tmp_path):
-    """Write a `credentials.json` into an isolated root and return that root."""
-
-    def _write(payload: dict | str) -> Path:
-        body = payload if isinstance(payload, str) else json.dumps(payload)
-        (tmp_path / "credentials.json").write_text(body, encoding="utf-8")
-        return tmp_path
-
-    return _write
-
+from fleet_telemetry import config
 
 # ------------------------------------------------------------------------------------
-# presence and absence
+# defaults and precedence
 # ------------------------------------------------------------------------------------
 
 
-def test_all_sources_absent_return_none(tmp_path):
-    assert config.opensky({}, tmp_path) is None
-    assert config.acled({}, tmp_path) is None
-    assert config.cds({}, tmp_path) is None
+def test_everything_defaults_on_an_empty_environment():
+    """A fresh clone with no .env must work -- nothing to configure before the project runs."""
+    assert config.oltp({}).database == "fleet"
+    assert config.warehouse({}).database == "telemetry"
+    assert config.kafka({}).bootstrap_servers == config.KAFKA_DEFAULT_BOOTSTRAP
+    assert config.api_token({}) == config.API_TOKEN_DEFAULT
 
 
-def test_blank_values_count_as_unset(tmp_path):
-    """`.env.example` ships every key empty; a copied-but-unfilled `.env` is not configured."""
-    env = {"ACLED_USERNAME": "", "ACLED_PASSWORD": "   ", "CDS_API_KEY": ""}
-    assert config.acled(env, tmp_path) is None
-    assert config.cds(env, tmp_path) is None
+def test_env_var_beats_default():
+    db = config.warehouse({"WAREHOUSE_HOST": "db.example.test", "WAREHOUSE_PORT": "6000"})
+    assert (db.host, db.port) == ("db.example.test", 6000)
 
 
-def test_partial_credentials_return_none(tmp_path):
-    """Half a credential pair is unusable -- do not hand callers a half-built object."""
-    assert config.opensky({"OPENSKY_CLIENT_ID": "id-only"}, tmp_path) is None
-    assert config.opensky({"OPENSKY_CLIENT_SECRET": "secret-only"}, tmp_path) is None
-    assert config.acled({"ACLED_USERNAME": "someone@example.org"}, tmp_path) is None
+def test_blank_value_counts_as_unset():
+    """A hand-edited .env easily ends up with an empty value; that means unset, not ''."""
+    db = config.warehouse({"WAREHOUSE_USER": "   "})
+    assert db.user == "telemetry"
+    assert "user" in db.defaulted
 
 
-def test_credentials_from_env(tmp_path):
-    creds = config.opensky({"OPENSKY_CLIENT_ID": "cid", "OPENSKY_CLIENT_SECRET": "csec"}, tmp_path)
-    assert creds == config.OpenSkyCredentials(client_id="cid", client_secret="csec")
+def test_partial_override_keeps_other_defaults():
+    db = config.oltp({"OLTP_PASSWORD": "explicit"})
+    assert db.password == "explicit"
+    assert db.host == "127.0.0.1"
+    assert db.defaulted == frozenset({"host", "port", "database", "user"})
+
+
+def test_the_two_databases_are_distinct():
+    """Different name, user and port, so a misdirected connection fails loudly."""
+    op, wh = config.oltp({}), config.warehouse({})
+    assert op.database != wh.database
+    assert op.user != wh.user
+    assert op.port != wh.port
+
+
+def test_non_numeric_port_raises():
+    with pytest.raises(ValueError, match="WAREHOUSE_PORT"):
+        config.warehouse({"WAREHOUSE_PORT": "not-a-port"})
+
+
+@pytest.mark.parametrize(
+    ("var", "value", "attribute"),
+    [
+        ("WAREHOUSE_HOST", "h.example.test", "host"),
+        ("WAREHOUSE_DB", "somedb", "database"),
+        ("WAREHOUSE_USER", "someuser", "user"),
+        ("WAREHOUSE_PASSWORD", "somepassword", "password"),
+    ],
+)
+def test_env_var_names_match_the_rest_of_the_project(var, value, attribute):
+    """Pin the exact variable names docker-compose.yml and dbt/profiles.yml use.
+
+    `WAREHOUSE_DB` is the one that bites: deriving the name from the field would give
+    `WAREHOUSE_DATABASE`, so the value everything else sets would be silently ignored and
+    dbt and Python would connect to different databases. That shipped once.
+    """
+    db = config.warehouse({var: value})
+    assert getattr(db, attribute) == value
+    assert attribute not in db.defaulted, f"{var} was not picked up"
 
 
 # ------------------------------------------------------------------------------------
-# precedence
+# defaults report themselves
 # ------------------------------------------------------------------------------------
 
 
-def test_env_var_beats_legacy_json(legacy_json):
-    root = legacy_json({"clientId": "from-json", "clientSecret": "secret-json"})
-    creds = config.opensky(
-        {"OPENSKY_CLIENT_ID": "from-env", "OPENSKY_CLIENT_SECRET": "secret-env"}, root
-    )
-    assert creds is not None
-    assert (creds.client_id, creds.client_secret) == ("from-env", "secret-env")
+def test_defaulted_fields_are_tracked():
+    assert config.warehouse({}).defaulted == frozenset(config.WAREHOUSE_DEFAULTS)
+    fully_set = {config.env_var_for("WAREHOUSE", field): "x" for field in config.WAREHOUSE_DEFAULTS}
+    fully_set["WAREHOUSE_PORT"] = "5432"
+    assert config.warehouse(fully_set).defaulted == frozenset()
 
 
-def test_legacy_json_used_when_env_absent(legacy_json):
-    """`credentials.json` predates `.env`; explore_opensky.py must keep working."""
-    root = legacy_json({"clientId": "from-json", "clientSecret": "secret-json"})
-    creds = config.opensky({}, root)
-    assert creds is not None
-    assert (creds.client_id, creds.client_secret) == ("from-json", "secret-json")
+def test_describe_flags_defaults_as_not_explicitly_configured():
+    status = {name: explicit for name, explicit, _ in config.describe({})}
+    assert status == {"OLTP": False, "Warehouse": False, "Kafka": False, "API token": False}
 
 
-def test_malformed_legacy_json_does_not_raise(legacy_json):
-    """A corrupt file should degrade to anonymous, not crash a probe run."""
-    assert config.opensky({}, legacy_json("{not json")) is None
-
-
-def test_non_dict_legacy_json_does_not_raise(legacy_json):
-    assert config.opensky({}, legacy_json("[1, 2, 3]")) is None
-
-
-def test_legacy_json_is_opensky_only(legacy_json):
-    """ACLED and CDS have no legacy path -- they must not pick up stray JSON keys."""
-    root = legacy_json({"username": "a@b.c", "password": "pw", "key": "k"})
-    assert config.acled({}, root) is None
-    assert config.cds({}, root) is None
-
-
-def test_cds_url_defaults_when_only_key_set(tmp_path):
-    creds = config.cds({"CDS_API_KEY": "abc123"}, tmp_path)
-    assert creds is not None
-    assert creds.url == config.CDS_DEFAULT_URL
-
-
-def test_cds_url_override_respected(tmp_path):
-    creds = config.cds(
-        {"CDS_API_KEY": "abc123", "CDS_API_URL": "https://example.test/api"}, tmp_path
-    )
-    assert creds is not None
-    assert creds.url == "https://example.test/api"
+def test_describe_marks_explicit_configuration():
+    env = {config.env_var_for("OLTP", f): v for f, v in config.OLTP_DEFAULTS.items()}
+    status = {name: explicit for name, explicit, _ in config.describe(env)}
+    assert status["OLTP"] is True, "explicitly set values must not report as defaulted"
+    assert status["Warehouse"] is False
 
 
 # ------------------------------------------------------------------------------------
@@ -127,45 +122,49 @@ def test_mask_hides_content_but_reports_length():
 
 def test_mask_handles_missing():
     assert config.mask(None) == "MISSING"
-    assert config.mask_email(None) == "MISSING"
 
 
-def test_mask_email_keeps_domain_only():
-    masked = config.mask_email("fatou.gaye@primeforge.io")
-    assert "fatou.gaye" not in masked
-    assert masked.endswith("@primeforge.io")
+def test_safe_dsn_redacts_the_password():
+    db = config.warehouse({"WAREHOUSE_PASSWORD": "hunter2-must-not-appear"})
+    assert "hunter2-must-not-appear" not in db.safe_dsn()
+    assert "***" in db.safe_dsn()
+    # and the real DSN still works, since that is the whole point of having both
+    assert "hunter2-must-not-appear" in db.dsn()
 
 
-def test_mask_email_without_at_sign():
-    masked = config.mask_email("notanemail")
-    assert "notanemail" not in masked
+def test_dsn_escapes_special_characters_in_credentials():
+    """An unescaped @ or / in a password silently produces a DSN pointing somewhere else."""
+    db = config.warehouse({"WAREHOUSE_USER": "a/b", "WAREHOUSE_PASSWORD": "p@ss:word"})
+    assert "p%40ss%3Aword" in db.dsn()
+    assert "a%2Fb" in db.dsn()
 
 
-def test_describe_never_contains_a_secret(tmp_path):
+def test_describe_never_contains_a_secret():
     """The single most important test in this file."""
     secrets = {
-        "OPENSKY_CLIENT_SECRET": "os-secret-must-not-appear",
-        "ACLED_PASSWORD": "acled-pw-must-not-appear",
-        "CDS_API_KEY": "cds-key-must-not-appear",
+        "OLTP_PASSWORD": "oltp-pw-must-not-appear",
+        "WAREHOUSE_PASSWORD": "warehouse-pw-must-not-appear",
+        "FLEET_API_TOKEN": "api-token-must-not-appear",
     }
-    env = {
-        "OPENSKY_CLIENT_ID": "opensky-client-id",
-        "ACLED_USERNAME": "someone@example.org",
-        **secrets,
-    }
-    rendered = " ".join(detail for _, _, detail in config.describe(env, tmp_path))
+    rendered = " ".join(detail for _, _, detail in config.describe(secrets))
     for value in secrets.values():
         assert value not in rendered, f"{value!r} leaked into describe() output"
-    # the ACLED account local-part is also an identifier worth not publishing
-    assert "someone@" not in rendered
 
 
-def test_describe_reports_configured_flags(tmp_path):
-    status = {name: ok for name, ok, _ in config.describe({"CDS_API_KEY": "abc123"}, tmp_path)}
-    assert status == {"OpenSky": False, "ACLED": False, "Copernicus CDS": True}
+def test_main_output_never_contains_a_secret(capsys, monkeypatch):
+    """describe() is safe, but main() formats it -- cover the printing path too."""
+    for name, value in {
+        "OLTP_PASSWORD": "oltp-pw-must-not-appear",
+        "WAREHOUSE_PASSWORD": "warehouse-pw-must-not-appear",
+        "FLEET_API_TOKEN": "api-token-must-not-appear",
+    }.items():
+        monkeypatch.setenv(name, value)
 
-
-def test_describe_explains_why_unconfigured_sources_matter(tmp_path):
-    details = {name: detail for name, _, detail in config.describe({}, tmp_path)}
-    assert "anonymously" in details["OpenSky"]
-    assert "403" in details["ACLED"]
+    config.main()
+    printed = capsys.readouterr().out
+    for value in (
+        "oltp-pw-must-not-appear",
+        "warehouse-pw-must-not-appear",
+        "api-token-must-not-appear",
+    ):
+        assert value not in printed

@@ -14,7 +14,7 @@
 #
 # Port 55432 matches docker-compose.yml -- see the comment there for why not 5432.
 
-aviation_conflict:
+fleet_telemetry:
   target: dev
 
   outputs:
@@ -22,9 +22,9 @@ aviation_conflict:
       type: postgres
       host: "{{ env_var('WAREHOUSE_HOST', '127.0.0.1') }}"
       port: "{{ env_var('WAREHOUSE_PORT', '55432') | int }}"
-      dbname: "{{ env_var('WAREHOUSE_DB', 'aviation') }}"
-      user: "{{ env_var('WAREHOUSE_USER', 'aviation') }}"
-      password: "{{ env_var('WAREHOUSE_PASSWORD', 'aviation') }}"
+      dbname: "{{ env_var('WAREHOUSE_DB', 'telemetry') }}"
+      user: "{{ env_var('WAREHOUSE_USER', 'telemetry') }}"
+      password: "{{ env_var('WAREHOUSE_PASSWORD', 'telemetry') }}"
       # dbt writes to silver/gold/marts; bronze is owned by the Python loader.
       schema: silver
       threads: 4
@@ -38,9 +38,9 @@ aviation_conflict:
       type: postgres
       host: "{{ env_var('WAREHOUSE_HOST', '127.0.0.1') }}"
       port: "{{ env_var('WAREHOUSE_PORT', '55432') | int }}"
-      dbname: "{{ env_var('WAREHOUSE_DB', 'aviation') }}"
-      user: "{{ env_var('WAREHOUSE_USER', 'aviation') }}"
-      password: "{{ env_var('WAREHOUSE_PASSWORD', 'aviation') }}"
+      dbname: "{{ env_var('WAREHOUSE_DB', 'telemetry') }}"
+      user: "{{ env_var('WAREHOUSE_USER', 'telemetry') }}"
+      password: "{{ env_var('WAREHOUSE_PASSWORD', 'telemetry') }}"
       schema: silver
       threads: 4
       connect_timeout: 10

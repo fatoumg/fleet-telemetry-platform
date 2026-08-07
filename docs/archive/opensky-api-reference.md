@@ -3,7 +3,7 @@
 Base URL: `https://opensky-network.org/api`
 
 Every figure here was **captured live on 2026-07-28**, both anonymously and with OAuth2 credentials.
-Regenerate with `python scripts/explore_opensky.py` (add `--anonymous` to reproduce the
+Regenerate with `scripts/explore_opensky.py` as of commit `7125a54` (add `--anonymous` to reproduce the
 unauthenticated column). Nothing in this document is copied from the spec without being checked
 against a real response — where the API and its own documentation disagree, that is called out.
 
@@ -412,4 +412,5 @@ Consequences of the above for the eventual separation work:
 - [`docs/free/rest.rst`](https://github.com/openskynetwork/opensky-api/blob/master/docs/free/rest.rst)
   and [`flight-response.rst`](https://github.com/openskynetwork/opensky-api/blob/master/docs/free/flight-response.rst)
 - [openskynetwork/opensky-api](https://github.com/openskynetwork/opensky-api) — `opensky_api.py` v1.4.0
-- Live probes captured by [scripts/explore_opensky.py](../scripts/explore_opensky.py), 2026-07-28
+- Live probes captured by `scripts/explore_opensky.py`, 2026-07-28. That script was deleted when
+  the project pivoted; recover it from git history at commit `7125a54` if you need to re-measure.

@@ -1,6 +1,6 @@
 version: 2
 
-# Bronze tables, owned by the Python loader (src/aviation_conflict/load/), not by dbt.
+# Bronze tables, owned by the CDC consumer (src/fleet_telemetry/load/), not by dbt.
 # Declared here so Silver models reference them via source() and appear in the lineage graph.
 #
 # Tables land in phase 1. Until then these are documentation only -- deliberately with no
@@ -12,54 +12,67 @@ sources:
   - name: bronze
     schema: bronze
     description: >
-      Raw API responses, append-only, stored as received. The only copy that will ever exist
-      for OpenSky: /states/all returns the current snapshot only, so an uncaptured moment is
-      unrecoverable.
+      Raw Debezium change events, append-only, stored as received. A Kafka topic has a
+      retention window rather than a memory, so an unconsumed event is gone -- Bronze is the
+      durable record.
 
     tables:
-      - name: raw_opensky_states
+      - name: raw_ping_events
         description: >
-          One row per captured /states/all response. The payload is a JSONB array of bare
-          positional arrays -- there are no field names on the wire, position is the schema.
-          Element 5 is longitude and element 6 is latitude, the reverse of the source spec's
-          "latitude, longitude" phrasing.
+          One row per GPS ping as received by the application. High volume: roughly 860k rows
+          per simulated day at 100 vehicles pinging every 5 seconds. The Silver model
+          deduplicates on ping_id.
         columns:
-          - name: captured_at
-            description: When this snapshot was fetched. Not the aircraft position time.
-          - name: payload
-            description: Verbatim response body, `{time, states[]}`.
-          - name: sampling_interval_seconds
+          - name: ping_id
             description: >
-              Polling interval in force for this capture. Load-bearing, not metadata: ADI is a
-              ratio of observed to baseline computed from the same source, so a systematic
-              undercount cancels only while the interval is constant. A change here
-              invalidates cross-period comparison.
+              Client-generated UUID, the idempotency key. A retrying device resends the same
+              ping_id, so deduplication is exact rather than heuristic.
+          - name: sequence_no
+            description: >
+              Monotonic per device. Not redundant with the timestamps: a gap in the sequence
+              proves data loss, whereas an unchanging position with no gap proves the vehicle
+              stopped. That is what makes "no data" and "no activity" distinguishable from the
+              data itself rather than inferred.
+          - name: device_ts
+            description: >
+              When the device recorded the reading, by its own clock. NOT TRUSTWORTHY --
+              device clocks drift and are sometimes badly wrong. Skew correction happens in
+              Gold, because it is an estimate whose method will be revised and revising it
+              must not require reprocessing every raw row.
+          - name: server_ts
+            description: When the application received it. Trustworthy; server clock.
+          - name: _ingested_at
+            description: When Bronze wrote the row.
 
-      - name: raw_acled_events
+      - name: raw_cdc_entities
         description: >
-          Conflict events from acleddata.com/api/acled/read. Blocked as of 2026-08-03: the
-          account authenticates but every /api/*/read returns 403.
+          Debezium change events for the mutable entities -- drivers, vehicles, depots, jobs.
+          Carries before and after images plus an op code (c/u/d/r), which is what allows Gold
+          to build Type 2 dimensions that capture every committed change. A dbt snapshot polls
+          on a schedule and would miss any change that happens between two runs.
         columns:
-          - name: event_id_cnty
-            description: ACLED business key.
-          - name: payload
+          - name: source_table
+            description: Originating OLTP table.
+          - name: op
+            description: Debezium operation - c=create, u=update, d=delete, r=snapshot read.
+          - name: before
+            description: Row image prior to the change; null for creates.
+          - name: after
+            description: Row image after the change; null for deletes.
+          - name: source_ts_ms
             description: >
-              Verbatim event JSON. Note `event_date` is a DATE, not a timestamp, and
-              `time_precision` (1=day, 2=week, 3=month) governs whether the +/-12 h exposure
-              window is meaningful for a given row.
+              Commit time from the OLTP write-ahead log, not the time the consumer saw it.
+              This is the event time for SCD Type 2 validity ranges.
 
-      - name: raw_weather_obs
+      - name: raw_job_events
         description: >
-          ERA5 reanalysis from the Copernicus Climate Data Store. ECMWF's dataset, not NOAA's
-          as the source spec states. Arrives as GRIB/NetCDF, so this table holds extracted
-          grid-cell rows rather than a raw payload.
+          Append-only job status transitions. Out-of-order arrival is expected here, and the
+          state machine must be validated rather than assumed -- the simulator deliberately
+          emits deliveries that arrive before their own pickup.
         columns:
-          - name: era5_grid_cell
-            description: 0.25-degree cell identifier. Sixteen of these per 1-degree analysis cell.
-          - name: observation_ts
-            description: Hourly observation time, UTC.
-          - name: pressure_level_hpa
-            description: >
-              NULL for single-level (surface) variables, 250 for winds aloft. Surface wind at
-              10 m is near-irrelevant to an aircraft at 10,600 m, so the 250 hPa level is what
-              the weather-adjusted baseline actually needs.
+          - name: job_id
+            description: Business key of the job.
+          - name: from_status
+            description: Status before the transition; null for the initial event.
+          - name: to_status
+            description: Status after the transition.

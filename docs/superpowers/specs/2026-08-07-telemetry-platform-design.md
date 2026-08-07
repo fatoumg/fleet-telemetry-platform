@@ -2,14 +2,14 @@
 
 Date: 2026-08-07
 Status: draft, pending approval
-Supersedes: `2026-08-03-platform-design.md` (aviation conflict analytics), abandoned — see §2.
+Supersedes: `2026-08-03-platform-design.md` (aviation conflict analytics), abandoned — see §3.
 
 ---
 
 ## 1. Purpose
 
-Learn data engineering end to end by building both halves of a pipeline: the operational system
-that produces events, and the analytics platform that consumes them.
+Learn data engineering end to end, **as a beginner**, by building both halves of a pipeline: the
+operational system that produces events, and the analytics platform that consumes them.
 
 The domain is vehicle telemetry for informal transport in The Gambia — vehicles, jobs, and GPS
 pings. The domain is **grounding, not a product**. Nobody will use the application. It exists to
@@ -19,14 +19,69 @@ that.
 The learning target is the pipeline. Every decision below is judged on what it teaches, not on
 whether it would ship.
 
-## 2. Why the previous project was abandoned
+**The bar is comprehension, not completion.** A working pipeline the learner cannot explain is a
+failed outcome here. See §3 for what that rules out.
+
+## 2. How this project teaches
+
+Six rules. They constrain the build, and where they conflict with speed, they win.
+
+### Naive first, then the tool
+
+Nothing is introduced before the problem it solves has actually bitten. Configure Debezium on day
+one and you have a working pipeline you cannot explain; hand-roll a batch poller first, watch it
+miss a delete, and CDC becomes obvious rather than magical.
+
+| Phase | Start naive | Feel the limit | Then introduce |
+| --- | --- | --- | --- |
+| Ingestion | `SELECT … WHERE updated_at > watermark` | Misses deletes; misses two changes between polls; loads the OLTP | Debezium CDC |
+| Transformation | Hand-written SQL run in order | No dependency graph, no tests, no lineage | dbt |
+| Orchestration | A shell script on a timer | No retries, no backfill, no visibility | Airflow |
+
+This costs time and buys the difference between *configuring* a tool and *understanding* it.
+
+### No magic
+
+Every line must be explainable by the person who wrote it. In practice:
+
+- Opaque configuration gets a comment per key, not a link to the docs.
+- No framework is adopted for a feature not yet needed. YAGNI is a comprehension rule here, not
+  just a scope rule — unused machinery is unexplained machinery.
+- Generated or copied code is either understood and kept, or deleted. Never parked.
+
+### Measure, do not assert
+
+Carried directly from the abandoned project, where measuring is what exposed the fatal flaw
+(§3) — and from the `WAREHOUSE_DB` bug during migration, where a config value was silently
+ignored and only surfaced because the loader reports which values fell back to defaults.
+
+Claims about data get checked against data. Row counts, null rates, lateness distributions and
+duplicate rates are printed, not assumed.
+
+### Failures are content
+
+When something breaks, the diagnosis goes in the repo next to the fix. This codebase already does
+this — the compose file explains why the port is 55432 rather than 5432, because a Windows port
+collision presented as an authentication failure and cost a day. Those notes are the most
+valuable teaching material here, because they are the only part a tutorial cannot supply.
+
+### Explain-back checkpoints
+
+Each phase ends with questions to answer from memory. Failing them means the phase is not
+finished, regardless of whether the code runs.
+
+### Something runs at the end of every phase
+
+No phase leaves the project in a state where nothing can be demonstrated.
+
+## 3. Why the previous project was abandoned
 
 Recorded because the failure drove this design.
 
 The aviation conflict project died of **data supply**, four times over:
 
 | Attempt | Outcome |
-|---|---|
+| --- | --- |
 | ACLED conflict events | Account authenticates; every `/api/*/read` returns 403. Entitlement, not a request defect |
 | OpenSky over conflict zones | Donbas, Yemen, Sudan: **0 aircraft**. ADI is `0/0` — the effect saturated before observation began |
 | OpenSky over The Gambia | **0 aircraft** over the country; 2 across all West Africa (2.8M km²) vs Switzerland's 1,856/Mkm². Not absent traffic — absent *receivers* |
@@ -39,7 +94,7 @@ Owning the producer removes that class of failure permanently. It also unlocks f
 public API can teach: change data capture, authentic Slowly Changing Dimensions, controlled
 volume, and **deliberately injected pathology**.
 
-## 3. The central problem
+## 4. The central problem
 
 One hard problem, which everything else serves:
 
@@ -59,7 +114,7 @@ Point 3 is the direct correction of the previous project's fatal flaw: `baseline
 estimated a counterfactual nothing could verify, so a wrong answer would have looked clean and
 plausible. Here, wrong answers are detectable.
 
-## 4. Scope decision
+## 5. Scope decision
 
 **The application is scaffolding. The simulator does the work.**
 
@@ -68,19 +123,19 @@ six weeks of auth flows and CRUD screens, no pipeline. Guardrails:
 
 - No user accounts, no sessions, no UI. A static bearer token is sufficient authentication.
 - The API surface is roughly six endpoints. If it grows past ten, something has gone wrong.
-- **No real users.** Waiting on adoption would recreate exactly the external dependency §2 exists
+- **No real users.** Waiting on adoption would recreate exactly the external dependency §3 exists
   to escape.
 - Load comes from the simulator, which is reproducible, controllable and instant.
 
 Corollary worth stating plainly: **simulated data is clean unless deliberately made dirty.** If
-the simulator only ever emits well-formed events, Phase 4 has nothing to work on and this becomes
+the simulator only ever emits well-formed events, Phase 3 has nothing to bite on and this becomes
 a CRUD app with a warehouse attached. Pathology injection is therefore a first-class feature with
-its own tests (§7), not a garnish added at the end.
+its own tests (§8), not a garnish added at the end.
 
-## 5. Stack
+## 6. Stack
 
 | Layer | Choice | Rationale |
-|---|---|---|
+| --- | --- | --- |
 | Source app | FastAPI + Python 3.13 | Same language as everything else; minimal ceremony |
 | **OLTP database** | Postgres 16, **separate container** | See below |
 | CDC | Debezium | The standard. Requires `wal_level=logical` on the OLTP instance |
@@ -99,12 +154,12 @@ separate credentials.
 
 Division of labour is unchanged: **EL in Python, T in SQL, orchestration separate.**
 
-## 6. The source system
+## 7. The source system
 
 ### Tables
 
 | Table | Mutability | Teaches |
-|---|---|---|
+| --- | --- | --- |
 | `drivers` | mutable | SCD Type 2 |
 | `vehicles` | mutable | SCD Type 2; reassignment between drivers |
 | `depots` | slowly changing | Spatial dimension |
@@ -117,7 +172,7 @@ Division of labour is unchanged: **EL in Python, T in SQL, orchestration separat
 This is the most load-bearing detail in the design. Every ping carries:
 
 | Column | Source | Trustworthy? |
-|---|---|---|
+| --- | --- | --- |
 | `device_ts` | Device clock, when the reading was taken | **No** — device clocks drift and are sometimes badly wrong |
 | `server_ts` | API receipt time | Yes |
 | `_ingested_at` | When Bronze wrote the row | Yes |
@@ -126,7 +181,7 @@ This is the most load-bearing detail in the design. Every ping carries:
 off. But it conflates two different things — genuine transmission delay and **device clock skew** —
 and they need different treatment. A device three hours fast is not producing events from the
 future; it is misreporting event time, and using `device_ts` raw would place its trips in the wrong
-hour. Estimating per-device skew and correcting for it is a Phase 4 problem, and one of the more
+hour. Estimating per-device skew and correcting for it is a Phase 3 problem, and one of the more
 valuable things here.
 
 ### Ping identity and sequence numbers
@@ -151,7 +206,7 @@ Six endpoints, roughly: create job, update job status, assign vehicle, post ping
 reads for the simulator to verify against. Batch ping submission is deliberate — it is how real
 devices behave when reconnecting, and it is what produces burst arrival.
 
-## 7. The simulator
+## 8. The simulator
 
 Drives the API at volume. Seeded RNG, so any run is reproducible from its seed — which is what
 makes pipeline tests deterministic.
@@ -169,7 +224,7 @@ Each is an independently toggleable flag, so a test can enable one in isolation 
 pipeline survives it.
 
 | Pathology | Mechanism | What it breaks if unhandled |
-|---|---|---|
+| --- | --- | --- |
 | Reconnect burst | Device buffers offline, submits an hour at once | Out-of-order arrival; aggregates for closed windows change |
 | Clock skew | Per-device constant offset, occasionally large | Events land in the wrong hour, or in the future |
 | Retry storm | Same `ping_id` submitted 2–5 times | Double-counted rows; inflated utilisation |
@@ -181,7 +236,7 @@ pipeline survives it.
 Ground truth is written alongside — the simulator logs what it *intended* to emit, so pipeline
 output can be diffed against reality. This is the verification the previous project could not have.
 
-## 8. Data flow
+## 9. Data flow
 
 ```text
 simulator ──HTTP──> FastAPI ──> OLTP Postgres
@@ -208,7 +263,7 @@ Unchanged from the previous design, because the rule was sound: **Silver fixes w
 reasonably disagree about; Gold holds every judgment call.**
 
 | Layer | Owns |
-|---|---|
+| --- | --- |
 | Bronze | Verbatim change events, including malformed ones. Never edited |
 | Silver | Deduplication on `ping_id`, typing, unit normalisation, geometry construction |
 | Gold | Clock-skew correction, lateness policy, trip reconstruction, utilisation rules |
@@ -227,9 +282,9 @@ from the change stream is strictly more accurate.
 
 Worth building both once and diffing them. The discrepancy is the lesson.
 
-## 9. Handling lateness
+## 10. Handling lateness
 
-The core of Phase 4, and where most of the learning is.
+The core of Phase 3, and where most of the learning is.
 
 **Lateness bound.** Accept events up to a declared horizon late (starting default: 6 hours).
 Beyond it, route to a quarantine table rather than dropping — silent discards are how undercounts
@@ -253,52 +308,151 @@ indistinguishable from one that is wrong.
 rate, sequence-gap rate, quarantine volume, restatement count. Observability as a first-class
 output rather than a dashboard bolted on later.
 
-## 10. Marts
+## 11. Marts
 
 | Mart | Grain | Question |
-|---|---|---|
+| --- | --- | --- |
 | `mart_vehicle_utilisation` | (vehicle, day) | Active hours vs available hours |
 | `mart_job_performance` | (job) | Actual vs estimated duration; on-time rate |
 | `mart_corridor_flow` | (corridor, hour) | Spatial demand — exercises PostGIS |
 | `mart_pipeline_health` | (day) | Lateness, duplicates, gaps, restatements |
 
-## 11. Testing
+## 12. Testing
 
 Carried over wholesale, because it was the strongest part of the previous design.
 
 | Scope | Approach |
-|---|---|
+| --- | --- |
 | Python | pytest — API handlers, simulator determinism, skew estimation |
 | dbt generic | `not_null`, `unique`, `relationships`, `accepted_values` |
 | **Grain assertions** | One singular test per fact and mart, unique on its declared grain |
 | **Ground-truth diff** | Simulator's intended output vs the mart. The verification the last project lacked |
-| **Pathology tests** | One test per §7 row: enable it alone, assert correctness holds |
+| **Pathology tests** | One test per §8 row: enable it alone, assert correctness holds |
 | CI | ruff, pytest, `dbt build` against a throwaway Postgres service |
 
 Grain assertions stay `severity: error`. Fan-out silently inflates every downstream number and is
 invisible without an explicit uniqueness test.
 
-## 12. Build phases
+## 13. Build phases
 
-Vertical slices. Something works end to end at Phase 2.
+Five phases, matching the conceptual stages of a pipeline rather than a convenient build order.
+Each is a teaching unit: it introduces one stage, follows the naive-first rule from §2, and ends
+with an explain-back checkpoint.
 
-| Phase | Deliverable | Blocked by |
-|---|---|---|
-| **0** | FastAPI app, OLTP schema, simulator emitting clean events | — |
-| 1 | Redpanda + Debezium; raw CDC landing in `bronze.*` | 0 |
-| 2 | dbt Silver for pings + grain tests. **First end-to-end slice** | 1 |
-| 3 | SCD Type 2 dimensions from the change stream | 2 |
-| 4 | **Lateness**: pathology injection, watermarks, skew correction, restatement | 3 |
-| 5 | Gold facts and marts, including `mart_pipeline_health` | 4 |
-| 6 | Airflow orchestration; CI green | 5 |
+Detailed guides live in `docs/learn/`, written as each phase is built.
 
-Phases 0–3 are getting to the start line. **Phase 4 is the project.** If time runs short, cut
-scope from 5 and 6, never from 4.
+### Phase 1 — Understand the source system
 
-## 13. Migration from the aviation project
+*You cannot ingest what you have not characterised.*
+
+Build the application, OLTP schema and simulator — then study them **as if from outside**, the way
+you would profile a third-party API you did not write. That inversion is the point: source-system
+analysis is a real skill, and doing it on a system you built means you can check your findings.
+
+| Build | Then measure |
+| --- | --- |
+| FastAPI app (~6 endpoints), OLTP schema (§7), simulator emitting clean events (§8) | Row counts and growth rate per table; ping volume per vehicle-hour; distribution of `server_ts − device_ts`; which columns are nullable in practice; how often each job status occurs |
+
+**Deliverable:** running app and simulator, plus `docs/source-system-reference.md` — measured, not
+declared, in the style of `docs/archive/opensky-api-reference.md`, which is the model for what
+good looks like here.
+
+**Concepts:** OLTP vs OLAP; entities vs events; append-only vs mutable; event time vs processing
+time; natural and surrogate keys; why volume and cadence determine every later decision.
+
+**Explain-back:** Why do pings carry three timestamps? Which one can you trust, and why not the
+other two? What does a gap in `sequence_no` prove that a repeated position does not?
+
+### Phase 2 — Ingestion
+
+*Get data out of the source and into durable raw storage, without losing or duplicating it.*
+
+Naive first (§2):
+
+1. **Batch poller** — `SELECT … WHERE updated_at > watermark`, on a loop. Works. Then find its
+   three failures by experiment: it never sees a **delete**; it misses a row changed **twice
+   between polls**; and it competes with the application for the OLTP database.
+2. **CDC** — Redpanda + Debezium reading the write-ahead log. Now the configuration means
+   something, because each key answers a failure you personally reproduced.
+
+**Deliverable:** `bronze.*` populated by both paths, and a written comparison of what each
+captured from the same simulator run. The diff *is* the lesson.
+
+**Concepts:** batch vs streaming; watermarks and why they leak; at-least-once delivery and
+therefore idempotency; why raw storage is immutable; replication slots and WAL; consumer offsets.
+
+**Explain-back:** Why can a batch poller never detect a delete? What does at-least-once mean for
+your Bronze table, and which column saves you? What happens to a replication slot if the consumer
+stops for a week?
+
+### Phase 3 — Transformation
+
+*Raw becomes trustworthy. The largest phase, and where the central problem (§4) lives.*
+
+Naive first: write the Silver logic as plain SQL scripts run in order. Break a column upstream and
+discover there is no dependency graph, no test, and no way to see what else broke. Then adopt dbt.
+
+Then, in order:
+
+| Step | Teaches |
+| --- | --- |
+| Silver: dedup on `ping_id`, typing, geometry | Idempotent transforms; grain |
+| Grain assertions on every model | Fan-out, and why it is invisible without a test |
+| Gold: SCD Type 2 from the change stream | Dimensional modelling; why CDC beats polled snapshots |
+| Gold: clock-skew correction | Estimates belong late, not in Silver |
+| **Lateness**: bounds, lookback, quarantine, restatement (§10) | The central problem |
+
+**Deliverable:** `silver.*` and `gold.*` populated, all grain tests passing, and pipeline output
+diffed against the simulator's ground truth.
+
+**Concepts:** medallion layering; declared grain; incremental models and lookback windows;
+SCD Type 2; watermarks; restatement; the difference between "no data" and "no activity".
+
+**Explain-back:** Why must `incremental_lookback_days` exceed `lateness_bound_hours`, and what
+exactly happens if it does not? Why is skew correction in Gold rather than Silver? Show a query
+that proves your fact table is unique on its declared grain.
+
+### Phase 4 — Orchestration
+
+*Make it run reliably without you.*
+
+Naive first: a shell script on a timer. Then break it deliberately — kill it mid-run, feed it a
+bad row, ask it to reprocess last Tuesday. It has no retries, no dependency ordering, no backfill
+and no way to see which step failed. Then adopt Airflow.
+
+**Deliverable:** an Airflow DAG running ingestion then `dbt build`, with a successful backfill of a
+past date and a deliberate failure that retries and then alerts.
+
+**Concepts:** DAGs and dependency ordering; scheduling vs triggering; idempotency as the
+precondition for backfill; retries and backoff; task-level observability.
+
+**Explain-back:** Why must a task be idempotent before you are allowed to retry it? What is the
+difference between a DAG's logical date and the time it actually ran, and why does that distinction
+exist at all?
+
+### Phase 5 — Serving
+
+*Data nobody can use is not finished.*
+
+**Deliverable:** the marts in §11, including `mart_pipeline_health`; documented freshness
+expectations; and one consuming surface — a small dashboard or read API — that a person who has
+never seen the pipeline can use to answer a question.
+
+**Concepts:** who consumes and how; metric definitions living in one place; freshness and its
+publication; observability as a product surface, not a private dashboard.
+
+**Explain-back:** If a mart is two hours stale, how would a consumer find out without asking you?
+What in your design stops "no data" being read as "zero activity"?
+
+### Sequencing note
+
+Phase 3 is the largest by some distance and contains the central problem. If time runs short, cut
+scope from Phase 5, then Phase 4 — never from Phase 3.
+
+## 14. Migration from the aviation project
 
 | Asset | Action |
-|---|---|
+| --- | --- |
 | `docker/` warehouse, PostGIS, Timescale | **Keep** — unchanged |
 | `dbt/` project, medallion schemas, grain-test discipline | **Keep** — repoint models |
 | `src/aviation_conflict/config.py` | **Keep** — rename package, same resolution logic |
@@ -306,17 +460,16 @@ scope from 5 and 6, never from 4.
 | `docs/opensky-api-reference.md` | **Archive** to `docs/archive/` — good work, superseded |
 | `2026-08-03-platform-design.md` | **Archive** — same |
 | `scripts/explore_*.py`, `data/samples/` | **Delete** |
-| Repository name | **Rename** — `aviation-conflict-analytics` will mislead every future reader, including us |
+| Repository name | **Done** — renamed to `fleet-telemetry-platform` on 2026-08-07; `git remote` repointed |
 
 Most of the engineering survives. What is discarded is the domain, not the platform — which is
 some evidence the layering was right.
 
-## 14. Open items
+## 15. Open items
 
 | Item | Blocks |
-|---|---|
-| Confirm Debezium + Postgres 16 logical replication config (`wal_level`, publications, slots) | Phase 1 |
-| Choose the lateness bound and lookback window; document the relationship between them | Phase 4 |
-| Decide the clock-skew estimator (per-device median offset is the obvious start) | Phase 4 |
-| Pick the new repository name | — |
-| Confirm 26M rows is comfortable on the target machine; reduce vehicle count if not | Phase 0 |
+| --- | --- |
+| Confirm Debezium + Postgres 16 logical replication config (`wal_level`, publications, slots) | Phase 2 |
+| Choose the lateness bound and lookback window; document the relationship between them | Phase 3 |
+| Decide the clock-skew estimator (per-device median offset is the obvious start) | Phase 3 |
+| Confirm 26M rows is comfortable on the target machine; reduce vehicle count if not | Phase 1 |

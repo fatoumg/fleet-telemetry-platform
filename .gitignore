@@ -2,15 +2,11 @@
 .env
 .env.*
 !.env.example
-credentials.json
 
-# Captured API responses (regenerate with scripts/explore_opensky.py)
-data/samples/
-
-# Bronze layer -- raw captures, created at runtime by the ingest package
+# Bronze layer -- raw event captures, created at runtime
 data/bronze/
 
-# Scratch experiments; temp.ipynb carries ~2.6 MB of embedded output
+# Scratch experiments from the abandoned aviation project
 temp.ipynb
 temp.py
 .ipynb_checkpoints/

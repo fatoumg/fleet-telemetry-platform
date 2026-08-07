@@ -37,4 +37,4 @@ repos:
     hooks:
       - id: detect-secrets
         args: [--baseline, .secrets.baseline]
-        exclude: ^(\.env\.example|data/samples/.*)$
+        exclude: ^.env.example$

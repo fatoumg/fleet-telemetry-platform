@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -)",
+      "Bash(python -c \"from app.main import app; print\\('import OK:', len\\(app.routes\\), 'routes'\\)\")",
+      "Bash(python -c \"import simulator.run; print\\('simulator imports OK'\\)\")",
+      "Bash(python -m simulator --vehicles 40 --hours 6 --api http://127.0.0.1:8000)",
+      "Bash(python -m fleet_telemetry.profile_source)",
+      "Bash(python -m simulator --reset --vehicles 40 --hours 6 --api http://127.0.0.1:8000)"
+    ]
+  }
+}

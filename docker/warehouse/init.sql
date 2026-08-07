@@ -8,12 +8,13 @@
 -- extensions
 -- --------------------------------------------------------------------------------------
 
--- Spatial: GEOMETRY(POINT,4326) on flights and conflicts, GEOMETRY(POLYGON,4326) on grid
--- cells, GIST indexes, and ST_DWithin for the conflict-proximity and weather-match joins.
+-- Spatial: GEOMETRY(POINT,4326) on pings, depots and job endpoints, GIST indexes, and
+-- ST_DWithin for corridor and catchment joins.
 CREATE EXTENSION IF NOT EXISTS postgis;
 
--- Time-series partitioning for fact_flight_trajectory, which is the only table large enough
--- to need it. Hypertable creation itself lives in dbt, next to the model it partitions.
+-- Time-series partitioning for fact_ping, which is the only table large enough to need it
+-- (~860k rows per simulated day). Hypertable creation lives in dbt, next to the model it
+-- partitions.
 CREATE EXTENSION IF NOT EXISTS timescaledb;
 
 -- --------------------------------------------------------------------------------------
@@ -31,18 +32,20 @@ CREATE SCHEMA IF NOT EXISTS bronze;
 CREATE SCHEMA IF NOT EXISTS silver;
 
 -- Dimensional model: dim_* and fact_*. Every judgment call lives here or above --
--- the 25 km buffer, the +/-12 h window, the distinct-aircraft counting rule.
+-- clock-skew correction, the lateness policy, trip reconstruction, utilisation rules.
 CREATE SCHEMA IF NOT EXISTS gold;
 
--- Analysis-ready aggregates: mart_adi, mart_altitude_escalation, mart_baseline_traffic.
+-- Analysis-ready aggregates: mart_vehicle_utilisation, mart_job_performance,
+-- mart_corridor_flow, mart_pipeline_health.
 CREATE SCHEMA IF NOT EXISTS marts;
 
 -- --------------------------------------------------------------------------------------
 -- session defaults
 -- --------------------------------------------------------------------------------------
 
--- Every upstream timestamp is UTC epoch seconds. Making that explicit at the database level
--- removes a whole class of off-by-one-hour bugs from the +/-12 h exposure window.
+-- Every timestamp in this system is UTC. Making that explicit at the database level removes
+-- a whole class of off-by-one-hour bugs from event-time windowing -- which matters more here
+-- than usual, since device clock skew is already a first-class problem.
 --
 -- Dynamic SQL because ALTER DATABASE needs a literal name and the name is parameterised
 -- (POSTGRES_DB), so it cannot be hardcoded here.

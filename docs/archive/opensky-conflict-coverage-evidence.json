@@ -1,0 +1,160 @@
+{
+ "captured_at": "2026-08-03T14:49:18+00:00",
+ "purpose": "Does OpenSky observe aircraft over conflict airspace? (threat B2)",
+ "probes": [
+  {
+   "name": "states_switzerland_control",
+   "path": "/states/all",
+   "params": {
+    "lamin": 45.8,
+    "lomin": 5.9,
+    "lamax": 47.8,
+    "lomax": 10.5
+   },
+   "rationale": "Coverage baseline over conflict airspace vs a high-traffic control.",
+   "url": "https://opensky-network.org/api/states/all?lamin=45.8&lomin=5.9&lamax=47.8&lomax=10.5",
+   "status_code": 200,
+   "content_type": "application/json",
+   "credits_remaining": "3981",
+   "elapsed_ms": 3679.2,
+   "bytes": 18501,
+   "captured_at": "2026-08-03T14:49:15+00:00",
+   "authenticated": true,
+   "aircraft": 144,
+   "area_Mkm2": 0.078,
+   "density_per_Mkm2": 1855.8
+  },
+  {
+   "name": "states_ukraine_donbas",
+   "path": "/states/all",
+   "params": {
+    "lamin": 46.0,
+    "lomin": 35.0,
+    "lamax": 50.0,
+    "lomax": 40.0
+   },
+   "rationale": "Coverage baseline over conflict airspace vs a high-traffic control.",
+   "url": "https://opensky-network.org/api/states/all?lamin=46.0&lomin=35.0&lamax=50.0&lomax=40.0",
+   "status_code": 200,
+   "content_type": "application/json",
+   "credits_remaining": "3980",
+   "elapsed_ms": 330.1,
+   "bytes": 33,
+   "captured_at": "2026-08-03T14:49:16+00:00",
+   "authenticated": true,
+   "aircraft": 0,
+   "area_Mkm2": 0.165,
+   "density_per_Mkm2": 0.0
+  },
+  {
+   "name": "states_syria_north_iraq",
+   "path": "/states/all",
+   "params": {
+    "lamin": 33.0,
+    "lomin": 36.0,
+    "lamax": 37.0,
+    "lomax": 44.0
+   },
+   "rationale": "Coverage baseline over conflict airspace vs a high-traffic control.",
+   "url": "https://opensky-network.org/api/states/all?lamin=33.0&lomin=36.0&lamax=37.0&lomax=44.0",
+   "status_code": 200,
+   "content_type": "application/json",
+   "credits_remaining": "3978",
+   "elapsed_ms": 315.2,
+   "bytes": 2003,
+   "captured_at": "2026-08-03T14:49:16+00:00",
+   "authenticated": true,
+   "aircraft": 15,
+   "area_Mkm2": 0.323,
+   "density_per_Mkm2": 46.4
+  },
+  {
+   "name": "states_yemen",
+   "path": "/states/all",
+   "params": {
+    "lamin": 12.5,
+    "lomin": 43.0,
+    "lamax": 17.5,
+    "lomax": 48.0
+   },
+   "rationale": "Coverage baseline over conflict airspace vs a high-traffic control.",
+   "url": "https://opensky-network.org/api/states/all?lamin=12.5&lomin=43.0&lamax=17.5&lomax=48.0",
+   "status_code": 200,
+   "content_type": "application/json",
+   "credits_remaining": "3977",
+   "elapsed_ms": 439.1,
+   "bytes": 33,
+   "captured_at": "2026-08-03T14:49:16+00:00",
+   "authenticated": true,
+   "aircraft": 0,
+   "area_Mkm2": 0.298,
+   "density_per_Mkm2": 0.0
+  },
+  {
+   "name": "states_sudan",
+   "path": "/states/all",
+   "params": {
+    "lamin": 12.0,
+    "lomin": 30.0,
+    "lamax": 17.0,
+    "lomax": 36.0
+   },
+   "rationale": "Coverage baseline over conflict airspace vs a high-traffic control.",
+   "url": "https://opensky-network.org/api/states/all?lamin=12.0&lomin=30.0&lamax=17.0&lomax=36.0",
+   "status_code": 200,
+   "content_type": "application/json",
+   "credits_remaining": "3975",
+   "elapsed_ms": 518.0,
+   "bytes": 33,
+   "captured_at": "2026-08-03T14:49:17+00:00",
+   "authenticated": true,
+   "aircraft": 0,
+   "area_Mkm2": 0.358,
+   "density_per_Mkm2": 0.0
+  },
+  {
+   "name": "states_israel_lebanon",
+   "path": "/states/all",
+   "params": {
+    "lamin": 31.0,
+    "lomin": 34.0,
+    "lamax": 34.5,
+    "lomax": 37.0
+   },
+   "rationale": "Coverage baseline over conflict airspace vs a high-traffic control.",
+   "url": "https://opensky-network.org/api/states/all?lamin=31.0&lomin=34.0&lamax=34.5&lomax=37.0",
+   "status_code": 200,
+   "content_type": "application/json",
+   "credits_remaining": "3974",
+   "elapsed_ms": 351.8,
+   "bytes": 4241,
+   "captured_at": "2026-08-03T14:49:17+00:00",
+   "authenticated": true,
+   "aircraft": 33,
+   "area_Mkm2": 0.109,
+   "density_per_Mkm2": 303.3
+  },
+  {
+   "name": "states_wide_mena_sanity",
+   "path": "/states/all",
+   "params": {
+    "lamin": 5.0,
+    "lomin": 25.0,
+    "lamax": 45.0,
+    "lomax": 60.0
+   },
+   "rationale": "Coverage baseline over conflict airspace vs a high-traffic control.",
+   "url": "https://opensky-network.org/api/states/all?lamin=5.0&lomin=25.0&lamax=45.0&lomax=60.0",
+   "status_code": 200,
+   "content_type": "application/json",
+   "credits_remaining": "3970",
+   "elapsed_ms": 769.1,
+   "bytes": 70703,
+   "captured_at": "2026-08-03T14:49:18+00:00",
+   "authenticated": true,
+   "aircraft": 541,
+   "area_Mkm2": 15.633,
+   "density_per_Mkm2": 34.6
+  }
+ ]
+}
