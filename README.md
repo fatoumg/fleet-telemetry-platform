@@ -102,19 +102,28 @@ Two containers come up: `oltp` (the source system, port 55433) and `warehouse`
 ## Working on this together
 
 Phases are **sequential** — you cannot transform data you have not yet ingested — so two people
-cannot simply take a phase each. What works:
+cannot simply take a phase each. Two splits that do work:
 
-- Split *within* a phase. Phase 2, for example, is a batch poller and a CDC pipeline that are
-  built separately and then compared.
-- One builds, the other writes the `docs/learn/` guide and the tests for it. The guide is not
-  documentation-after-the-fact here; explaining the thing is how you find out whether you
-  understood it.
+- **Split within a phase.** Phase 2 is a batch poller and a CDC pipeline, built separately and
+  then compared against the same run. Genuinely parallel, and the comparison is the lesson.
+- **One builds, one explains.** The second person writes the `docs/learn/` guide and the tests.
+  This is not the lesser job: writing the explanation is how you discover what you did not
+  actually understand, so **alternate it every phase** rather than letting one person own it.
 
-Branch from `main`, one branch per phase or per slice: `phase-2/batch-poller`. Keep `main` green
-— it is what a newcomer clones.
+The explain-back questions at the end of each guide work far better asked by another person than
+read off a page. Answer them out loud to each other before calling a phase done.
+
+Whoever is not driving should still run the code. Reading a pipeline teaches you much less than
+watching it break.
+
+### Mechanics
+
+Branch from `main`, one branch per phase or slice: `phase-2/batch-poller`. Keep `main` green — it
+is what a newcomer clones, and it was wrong for two weeks before anyone noticed.
 
 Before pushing: `ruff check . && pytest`. The pre-commit hooks cover the same ground, which is
-why `pre-commit install` is in the setup list rather than optional.
+why `pre-commit install` is in the setup list rather than optional — it was configured but never
+installed for the first two weeks, so none of the checks ran for anybody.
 
 ## Configuration
 
