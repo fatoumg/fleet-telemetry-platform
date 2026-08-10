@@ -3,7 +3,12 @@
 What the fleet application actually produces. **Every number here came from a query**, not from
 the schema and not from the simulator's configuration.
 
-Reproduce it:
+There are **two ways to produce data, and their timestamp profiles differ by four orders of
+magnitude.** Almost everything below was measured in backfill mode; §9 covers continuous mode and
+says explicitly which figures change.
+
+**Backfill** — a window of history, generated flat out. Needs the privileged `server_ts` override,
+because a correct server would stamp every row with *now*.
 
 ```bash
 docker compose -f docker/docker-compose.yml up -d oltp
@@ -12,7 +17,26 @@ python -m simulator --vehicles 40 --hours 6
 python -m fleet_telemetry.profile_source
 ```
 
-Measured 2026-08-07 against a fresh database: 40 vehicles, 6 simulated hours, seed 42.
+**Continuous** — real speed, indefinitely. What `docker compose up -d` runs, and what a real fleet
+would look like. No override, no special configuration.
+
+```bash
+docker compose -f docker/docker-compose.yml up -d
+docker compose -f docker/docker-compose.yml logs -f simulator
+```
+
+| | Baseline run (§1–§8) | Continuous run (§9) |
+| --- | --- | --- |
+| Measured | 2026-08-07 | 2026-08-10 |
+| Vehicles | 40 | 10 (the compose default) |
+| Span | 6 simulated hours | ongoing |
+| Rows | 172,800 | 550 in the sampled window |
+| Seed | 42 | 42 |
+
+The compose default is **10 vehicles**, not the 40 this baseline used — 40 writes ~690,000 rows a
+day and over a gigabyte a week, which is not something to leave running unattended. Set
+`SIM_VEHICLES=40` when throughput is the thing under test. Per-ping *shape* is identical either
+way; only volume figures scale.
 
 ---
 
@@ -38,6 +62,9 @@ stream rather than query it.
 | `jobs` | mutable status | 143 | A state machine |
 | `job_events` | append-only | 535 | How each job reached its status |
 | `pings` | append-only | 172,800 | The high-volume table |
+
+Row counts are this baseline run's. The database grows continuously now, so live counts will be
+higher — `python -m fleet_telemetry.profile_source` reports current figures.
 
 ---
 
@@ -67,6 +94,11 @@ sequence, per-vehicle event time — but that is a deliberate trade, not a defau
 The theoretical maximum at one ping per five seconds is 720/hour. The observed mean is 617
 because vehicles are staggered — a vehicle that starts mid-hour contributes a partial hour, which
 is why the minimum is 105.
+
+Continuous mode measured **2.24 pings/sec at 10 vehicles**, against a nominal 2.0. The excess is
+the wall-clock stepping described in §8, which shortens some intervals and so squeezes in slightly
+more readings than the interval implies. Scaled to 40 vehicles that is 8 pings/sec, ~690,000 rows
+and ~170 MB a day.
 
 The 22.2M projection is close to the spec's 26M estimate, which used the theoretical 720 rather
 than the measured 617. **The measurement is the one to trust.**
@@ -123,6 +155,27 @@ quarantine correct data in the clean case — before any pathology is injected.
 > **Percentiles, not the mean.** Once devices start reconnecting after outages the distribution
 > develops a long right tail, and a mean over that tail describes nobody. The p99 and max are
 > what a watermark actually has to survive.
+
+### The same system, two lateness distributions
+
+Continuous mode produces the same rows through the same endpoint, and its lateness is **four
+orders of magnitude smaller**:
+
+| Mode | p50 | p99 | max | What the number is |
+| --- | --- | --- | --- | --- |
+| Backfill | 34.0 s | 67.0 s | 68.0 s | batch buffering + a synthetic 1–8 s delay |
+| Continuous | 0.0031 s | 0.0090 s | 0.0090 s | real localhost round trip |
+
+Neither is wrong, and that is the point: **lateness is a property of how data arrives, not of the
+schema.** A watermark tuned on one of these is badly wrong for the other — too tight and continuous
+mode's correct data gets quarantined; too loose and every backfilled aggregate waits a minute for
+data that came in three milliseconds.
+
+Phase 3 has to state which arrival regime it assumes, and Phase 2 has to avoid mixing them in one
+window. Mixing them is easy to do by accident: while measuring for this document, a two-minute
+`--live` backfill of 72 rows landed inside a 3,822-row continuous sample. Those 72 rows were 1.9%
+of the sample and therefore sat exactly on the p99 — dragging it from 0.009 s to **59 s**. The
+p50 barely moved. A single stray backfill is enough to make a percentile lie.
 
 ---
 
@@ -225,12 +278,73 @@ and unknowable fraction invisible to any polling strategy.
 
 ---
 
-## 8. What this implies downstream
+## 8. Continuous mode, and a clock that cannot be trusted
 
-1. **The watermark floor is 68 s**, measured, before any pathology exists. Phase 3's
-   `lateness_bound_hours` has to clear the real distribution, not a guessed one.
-2. **`device_ts` cannot be the event time without correction.** It is client-controlled. Phase 3
-   estimates per-device skew; Silver must not silently trust the raw value.
+Measured 2026-08-10: 10 vehicles, 5 s interval, 550 rows, seed 42.
+
+| Measure | Value | Against expectation |
+| --- | --- | --- |
+| Throughput | 2.24 pings/sec | 2.0 nominal (10 ÷ 5 s) |
+| Lateness p50 | 0.0031 s | real round trip, no synthetic delay |
+| Negative lateness | **0** | invariant holds |
+| Sequence gaps / repeats | **0 / 0** | clean |
+| `server_ts` inversions | **0** of 120 | see below |
+
+### The wall clock steps backwards, and it broke the simulator
+
+The tick interval measured **mean 4.52 s** against a nominal 5.00, with 4 excursions in 23 gaps —
+all of them *short* (min 2.20 s), never long. Two independent measurements explain it.
+
+Directly, inside the simulator's own container:
+
+```text
+wall clock stepped -2.6768s relative to monotonic
+worst wall-vs-monotonic divergence over 30s: 2.6768s
+```
+
+The container's wall clock jumps **backwards ~2.7 s roughly every 30 s** — WSL2 resyncing its VM
+clock against the Windows host. And the arithmetic closes exactly: 4 steps × 2.8 s shortfall ÷ 23
+gaps = 0.487 s, and 5.00 − 0.487 = **4.51**, against 4.52 observed.
+
+This surfaced a real bug. The `--forever` loop originally computed its sleep from
+`datetime.now()`, so a backward step made one tick fire ~2.8 s early and the next ~2.8 s late —
+**pairs of gaps summing to exactly two intervals**, which is what the `pings` table showed. The fix
+is the standard one, now enforced by a regression test whose signature refuses a `datetime`:
+
+> **Pace on `time.monotonic()`. Timestamp on the wall clock.** Monotonic only ever moves forward
+> at one second per second. A device timestamp is a real point in time and must stay wall-clock —
+> but nothing that *schedules* may do arithmetic on it.
+
+After the fix, the compensating long gaps disappeared and the maximum gap fell from 7.82 s to
+5.07 s. The remaining short gaps are the wall clock itself, faithfully recorded.
+
+### Why this matters well beyond the simulator
+
+**`device_ts` is untrustworthy even when we own the device.** This document already said phone
+clocks drift. It turns out our own container, on our own machine, with no phone involved, steps its
+clock by seconds. The distrust is not a hypothetical about cheap hardware — it is measured here.
+
+**`server_ts` is only monotonic by luck at this interval.** It survived: 0 inversions in 120
+consecutive readings, minimum step +2.199 s. But that is because the 2.7 s step is *smaller than
+the 5 s ping interval*. **Inferred, not measured:** at a 1 s interval a 2.7 s backward step would
+put `server_ts` out of order with respect to insertion order, and any Phase 2 watermark advancing
+on `max(server_ts)` would then skip rows permanently. Worth testing deliberately before trusting
+`server_ts` ordering at sub-step intervals.
+
+**Phase 4 inherits this.** Airflow schedules on wall-clock time by design. A host that steps its
+clock is exactly how a scheduled interval gets skipped or run twice.
+
+---
+
+## 9. What this implies downstream
+
+1. **The watermark floor is 68 s in backfill and 9 ms in continuous mode** — measured, before any
+   pathology exists. Phase 3's `lateness_bound_hours` has to clear the real distribution of the
+   regime it is running against, and a window must not mix the two (§3).
+2. **`device_ts` cannot be the event time without correction.** It is client-controlled, and §8
+   shows it is unreliable even when we own the client: our own container steps its wall clock
+   backwards by 2.7 s. Phase 3 estimates per-device skew; Silver must not silently trust the raw
+   value.
 3. **`ping_id` is the deduplication key.** It is client-generated and stable across retries,
    which makes ingestion exactly idempotent rather than approximately.
 4. **22M rows is the realistic target**, ~4.8 GB with indexes, ~82 minutes to generate. Large
@@ -238,5 +352,13 @@ and unknowable fraction invisible to any polling strategy.
 5. **Deletes exist and leave nothing behind.** `DELETE /vehicles/{id}` is a hard delete, on
    purpose: Phase 2's batch poller finds changes via `updated_at`, and a deleted row has no
    `updated_at` to find. That is the cleanest demonstration of why CDC exists.
-6. **Left-censoring is already present.** Any duration metric must state how it treats jobs that
-   were still open at the window boundary.
+6. **Right-censoring is already present.** Any duration metric must state how it treats jobs that
+   were still open at the window boundary — see §6.
+7. **Pace on a monotonic clock, timestamp on the wall clock.** Measured, not theoretical: the
+   simulator's own container steps its wall clock backwards ~2.7 s every ~30 s, and pacing on
+   wall-clock arithmetic was a real bug in this repo. Anything that schedules work — the simulator
+   here, Airflow in phase 4 — must not do interval arithmetic on wall-clock time. See §8.
+8. **`server_ts` ordering is not guaranteed at short intervals.** It held here (0 inversions in
+   120 readings) only because the clock step is smaller than the 5 s ping interval. A watermark
+   advancing on `max(server_ts)` should be tested against a deliberate clock step before it is
+   trusted.

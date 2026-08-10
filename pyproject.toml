@@ -22,6 +22,11 @@ app = [
     "uvicorn[standard]>=0.32",
     "psycopg[binary]>=3.2",
     "psycopg-pool>=3.2",
+    # The simulator's HTTP client. Belongs here rather than in [dev], where it lived until the
+    # container exposed the mistake: on a developer's machine `.[app,dev]` hides the
+    # difference, but an image built with `.[app]` alone crash-looped on ModuleNotFoundError.
+    # FastAPI's TestClient needs it too, and is satisfied by this.
+    "httpx>=0.28",
 ]
 # Phase 1-2. Consuming CDC and loading the warehouse.
 warehouse = [
@@ -40,7 +45,6 @@ dev = [
     "ruff>=0.16",
     "pre-commit>=3.7",
     "detect-secrets>=1.5",
-    "httpx>=0.28",        # FastAPI TestClient
 ]
 
 [project.scripts]

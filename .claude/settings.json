@@ -6,7 +6,10 @@
       "Bash(python -c \"import simulator.run; print\\('simulator imports OK'\\)\")",
       "Bash(python -m simulator --vehicles 40 --hours 6 --api http://127.0.0.1:8000)",
       "Bash(python -m fleet_telemetry.profile_source)",
-      "Bash(python -m simulator --reset --vehicles 40 --hours 6 --api http://127.0.0.1:8000)"
+      "Bash(python -m simulator --reset --vehicles 40 --hours 6 --api http://127.0.0.1:8000)",
+      "PowerShell(python -m ruff check .)",
+      "PowerShell(python -m ruff format .)",
+      "PowerShell(python -m pytest tests/test_simulator_forever.py -q 2>&1)"
     ]
   }
 }

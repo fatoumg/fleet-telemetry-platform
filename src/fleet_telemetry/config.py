@@ -89,6 +89,11 @@ KAFKA_DEFAULT_BOOTSTRAP = "127.0.0.1:19092"
 # simulator behaves like a client rather than writing to the database behind the app's back.
 API_TOKEN_DEFAULT = "local-dev-token"
 
+# Where the simulator finds the application. Localhost suits a developer running uvicorn by
+# hand; the compose simulator overrides it with `http://api:8000`, because inside the compose
+# network services address each other by service name and the host port mapping does not exist.
+API_URL_DEFAULT = "http://127.0.0.1:8000"
+
 
 # --------------------------------------------------------------------------------------
 # shapes
@@ -222,6 +227,16 @@ def api_token(env: Mapping[str, str] | None = None) -> str:
     return _get(env, "FLEET_API_TOKEN") or API_TOKEN_DEFAULT
 
 
+def api_url(env: Mapping[str, str] | None = None) -> str:
+    """Base URL of the fleet application, as the simulator should address it.
+
+    Not a secret, but worth resolving here rather than as a bare argparse default: the same
+    simulator runs both on the host (localhost) and inside compose (`http://api:8000`), and a
+    wrong value presents as "the API is down" rather than "you are calling the wrong host".
+    """
+    return _get(env, "FLEET_API_URL") or API_URL_DEFAULT
+
+
 # --------------------------------------------------------------------------------------
 # reporting
 # --------------------------------------------------------------------------------------
@@ -245,6 +260,8 @@ def describe(env: Mapping[str, str] | None = None) -> list[tuple[str, bool, str]
     broker = kafka(env)
     token = api_token(env)
     token_defaulted = _get(env, "FLEET_API_TOKEN") is None
+    url = api_url(env)
+    url_defaulted = _get(env, "FLEET_API_URL") is None
 
     def detail(db: DatabaseConfig) -> str:
         note = f" [defaults: {', '.join(sorted(db.defaulted))}]" if db.defaulted else ""
@@ -259,6 +276,7 @@ def describe(env: Mapping[str, str] | None = None) -> list[tuple[str, bool, str]
             broker.bootstrap_servers + (" [default]" if broker.defaulted else ""),
         ),
         ("API token", not token_defaulted, mask(token) + (" [default]" if token_defaulted else "")),
+        ("API URL", not url_defaulted, url + (" [default]" if url_defaulted else "")),
     ]
 
 

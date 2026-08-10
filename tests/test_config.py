@@ -30,6 +30,12 @@ def test_everything_defaults_on_an_empty_environment():
     assert config.warehouse({}).database == "telemetry"
     assert config.kafka({}).bootstrap_servers == config.KAFKA_DEFAULT_BOOTSTRAP
     assert config.api_token({}) == config.API_TOKEN_DEFAULT
+    assert config.api_url({}) == config.API_URL_DEFAULT
+
+
+def test_api_url_is_overridable():
+    """The compose simulator addresses the app by service name, not through the host mapping."""
+    assert config.api_url({"FLEET_API_URL": "http://api:8000"}) == "http://api:8000"
 
 
 def test_env_var_beats_default():
@@ -99,7 +105,13 @@ def test_defaulted_fields_are_tracked():
 
 def test_describe_flags_defaults_as_not_explicitly_configured():
     status = {name: explicit for name, explicit, _ in config.describe({})}
-    assert status == {"OLTP": False, "Warehouse": False, "Kafka": False, "API token": False}
+    assert status == {
+        "OLTP": False,
+        "Warehouse": False,
+        "Kafka": False,
+        "API token": False,
+        "API URL": False,
+    }
 
 
 def test_describe_marks_explicit_configuration():
