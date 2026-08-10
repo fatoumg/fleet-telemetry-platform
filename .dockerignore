@@ -1,0 +1,35 @@
+# The build context is the project root, so keep it small and keep secrets out of it.
+#
+# Anything listed here is invisible to the Dockerfile. Note that excluding .env is a security
+# measure, not an optimisation: a file copied into a layer stays in the image history even if a
+# later layer deletes it.
+
+.git
+.github
+.venv
+venv
+env
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.ruff_cache
+.mypy_cache
+
+# Secrets and local overrides. .env.example is safe but the image has no use for it.
+.env
+.env.*
+credentials.json
+*.bak
+
+# Not needed at runtime: the image runs the app and the simulator, nothing else.
+docs
+dbt
+dags
+tests
+data
+notebooks
+*.ipynb
+
+# Docker's own files -- the compose file is read from the host, never from inside the image.
+docker/docker-compose.yml

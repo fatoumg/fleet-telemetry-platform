@@ -1,7 +1,9 @@
-# Two databases, deliberately separate.
+# The whole source system: two databases, the application, and the world that drives it.
 #
 #   oltp       what the application writes to. Plain Postgres, normalised, current-state only.
 #   warehouse  what analytics reads. Postgres + PostGIS + TimescaleDB, dimensional, keeps history.
+#   api        the fleet application
+#   simulator  stands in for real vehicles. Runs continuously; see the note on its service.
 #
 # THEY MUST NOT BE THE SAME DATABASE. An application bug must not be able to corrupt analytics;
 # an analyst's runaway scan must not be able to slow down the app; and the two have completely
@@ -11,7 +13,12 @@
 # Redpanda and Debezium arrive in phase 2, Airflow (with its own third database) in phase 4.
 #
 #   docker compose -f docker/docker-compose.yml up -d
-#   docker compose -f docker/docker-compose.yml logs -f oltp
+#   docker compose -f docker/docker-compose.yml logs -f simulator
+#   docker compose -f docker/docker-compose.yml stop simulator     # pause the world
+#
+# Only want the databases, and to run the app by hand? Name them:
+#
+#   docker compose -f docker/docker-compose.yml up -d oltp warehouse
 
 name: fleet-telemetry
 
@@ -100,6 +107,103 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
+
+  # ------------------------------------------------------------------------------------
+  # API -- the fleet application
+  # ------------------------------------------------------------------------------------
+  api:
+    build:
+      # The project root, not docker/. The image needs src/, app/ and simulator/.
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: fleet-app:local
+    container_name: fleet-api
+    restart: unless-stopped
+    depends_on:
+      oltp:
+        condition: service_healthy
+    environment:
+      # Inside the compose network services address each other by service name on the
+      # CONTAINER port. The 55433 host mapping does not exist in here.
+      OLTP_HOST: oltp
+      OLTP_PORT: 5432
+      OLTP_DB: ${OLTP_DB:-fleet}
+      OLTP_USER: ${OLTP_USER:-fleet}
+      OLTP_PASSWORD: ${OLTP_PASSWORD:-fleet}
+      FLEET_API_TOKEN: ${FLEET_API_TOKEN:-local-dev-token}
+      # Off, as everywhere else. Backfilling history is a deliberate act you perform against a
+      # server you started for the purpose -- not a capability a long-running service holds.
+      FLEET_ALLOW_SERVER_TS_OVERRIDE: ${FLEET_ALLOW_SERVER_TS_OVERRIDE:-false}
+      TZ: UTC
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "${API_PORT:-8000}:8000"
+    healthcheck:
+      # /health returns 200 even when the database is unreachable -- it reports
+      # status="degraded" in the body. Checking the status code alone would call a broken
+      # API healthy and let the simulator start against it.
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import json, sys, urllib.request
+          body = json.load(urllib.request.urlopen("http://127.0.0.1:8000/health"))
+          sys.exit(0 if body["status"] == "ok" else 1)
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  # ------------------------------------------------------------------------------------
+  # Simulator -- stands in for real vehicles, and therefore never stops
+  # ------------------------------------------------------------------------------------
+  #
+  # This is not a scheduled job and phase 4's Airflow will not trigger it. It represents the
+  # world: minibuses are out there driving whether or not the pipeline is up. Airflow will
+  # orchestrate the things that CONSUME this data.
+  #
+  # DISK. At the defaults -- 10 vehicles, one ping each per 5 seconds -- this writes 2 rows a
+  # second, about 173,000 a day, roughly 43 MB a day with indexes. That is a stack you can
+  # leave running. The design's full fleet is 40, which is four times that and over a gigabyte
+  # a week, so it is opt-in: set SIM_VEHICLES=40 when you actually want the volume.
+  #
+  # Stop it entirely with:
+  #   docker compose -f docker/docker-compose.yml stop simulator
+  simulator:
+    # Reuses the api service's image rather than declaring its own `build:`. Two services
+    # building the same tag makes buildx export it twice in parallel, and the second export
+    # fails with `image "fleet-app:local": already exists`. Since simulator depends on api,
+    # the image is always built by the time this starts.
+    image: fleet-app:local
+    container_name: fleet-simulator
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # It talks to the API for writes, and to the database directly for reads it needs at
+      # startup: the depot list, the active vehicles, and where each sequence counter reached.
+      OLTP_HOST: oltp
+      OLTP_PORT: 5432
+      OLTP_DB: ${OLTP_DB:-fleet}
+      OLTP_USER: ${OLTP_USER:-fleet}
+      OLTP_PASSWORD: ${OLTP_PASSWORD:-fleet}
+      FLEET_API_TOKEN: ${FLEET_API_TOKEN:-local-dev-token}
+      FLEET_API_URL: http://api:8000
+      TZ: UTC
+    command:
+      - python
+      - -m
+      - simulator
+      - --forever
+      - --vehicles
+      - "${SIM_VEHICLES:-10}"
+      - --interval
+      - "${SIM_INTERVAL:-5}"
+    # Long enough for the current tick to finish and the summary to print. The simulator
+    # handles SIGTERM; the default 10s would be tight if a batch were mid-flight.
+    stop_grace_period: 20s
 
 volumes:
   warehouse_data:
