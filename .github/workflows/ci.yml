@@ -34,7 +34,11 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-      - run: pip install -e ".[dev]"
+      # [dev] alone cannot run the suite: tests/test_app.py imports fastapi and
+      # tests/test_simulator_forever.py imports simulator.run, which imports httpx -- both come
+      # from [app]. [warehouse] is needed too, from this phase onward, because
+      # fleet_telemetry.load.schema (tests/test_bronze_load.py) imports psycopg.
+      - run: pip install -e ".[app,warehouse,dev]"
       - run: pytest
 
   dbt:
