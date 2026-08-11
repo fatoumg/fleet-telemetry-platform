@@ -43,3 +43,7 @@ dist/
 .claude/
 CLAUDE.md
 .github
+
+# Subagent-driven development scratch: ledgers, briefs, review packages.
+# Git history is the record; this is working state for an in-flight plan.
+.superpowers/
