@@ -93,7 +93,10 @@
             "command": "bash .claude/hooks/check-python.sh"
           }
         ]
-      }
+      },
+      "PowerShell(python -m ruff check .)",
+      "PowerShell(python -m ruff format .)",
+      "PowerShell(python -m pytest tests/test_simulator_forever.py -q 2>&1)"
     ]
   }
 }

@@ -7,8 +7,9 @@ The domain is vehicle telemetry for informal transport in The Gambia — vehicle
 pings. The domain is **grounding, not a product.** Nobody will use the application; it exists
 to emit realistically-shaped events.
 
-Current status: **scaffolding.** Warehouse and dbt project stand up; the application,
-simulator and CDC pipeline are not built yet. Start with the design spec.
+Current status: **phase 1 of 5 complete.** The source system is built and running — application,
+simulator and OLTP database all come up with one command and produce data continuously. The
+warehouse stands up but is empty: nothing connects the two yet, which is phase 2's job.
 
 ## The one hard problem
 
@@ -62,13 +63,19 @@ testable.
 ## Layout
 
 ```text
-docker/            warehouse: postgres + postgis + timescaledb
+docker/            compose stack + the image the app and simulator share
+  oltp/init.sql    the source schema -- read this first, it is heavily commented
+app/               the fleet application (FastAPI)
+simulator/
+  world.py         pure physics: where is a vehicle at time T
+  run.py           the clock: backfill a window, or --forever at real speed
 src/fleet_telemetry/
   config.py        settings resolution (env -> .env -> built-in default)
+  profile_source.py  phase 1: measure the source system
   ingest/          Bronze: Kafka CDC -> raw events
   load/            Bronze -> bronze.* tables
 dbt/               Silver, Gold, marts -- all business logic lives here
-dags/              Airflow DAGs (phase 6)
+dags/              Airflow DAGs (phase 4)
 tests/
 ```
 
@@ -95,9 +102,64 @@ everything: `[warehouse]` (dbt, Kafka client) lands in phase 2, `[airflow]` in p
 alone is not enough to run the tests — the suite imports the application, so `[app]` is required
 too.
 
-Two containers come up: `oltp` (the source system, port 55433) and `warehouse`
-(PostGIS + TimescaleDB, port 55432). The ports are deliberately odd — see the comments in
+Four containers come up:
+
+| Service | What it is | Port |
+| --- | --- | --- |
+| `oltp` | the source system | 55433 |
+| `warehouse` | PostGIS + TimescaleDB, empty until phase 2 | 55432 |
+| `api` | the fleet application | 8000 |
+| `simulator` | stands in for real vehicles; runs continuously | — |
+
+The database ports are deliberately odd — see the comments in
 [docker-compose.yml](docker/docker-compose.yml) for the Windows port-collision reason.
+
+## The world runs on its own
+
+`up -d` starts the simulator in `--forever` mode and it does not stop: 10 vehicles, one ping
+each per 5 seconds, paced against the real clock. Nothing schedules it, and phase 4's Airflow
+never will — it *represents the world*, and minibuses keep driving whether or not your pipeline
+is up. Airflow will orchestrate the things that consume this data.
+
+```bash
+docker compose -f docker/docker-compose.yml logs -f simulator     # watch it
+docker compose -f docker/docker-compose.yml stop simulator        # pause the world
+docker compose -f docker/docker-compose.yml start simulator       # resume
+```
+
+That default writes **~173,000 rows/day, roughly 43 MB with indexes** — small enough to leave
+running. The design's full fleet is 40 vehicles, four times that and over a gigabyte a week, so
+it is opt-in: set `SIM_VEHICLES=40` in `.env` when throughput is the thing you want to test.
+
+Two things to know before you change these. Only the first N active vehicles by id report, so
+the rest simply stop producing rows — in the data that is indistinguishable from a device that
+failed. And changing `SIM_INTERVAL` makes new data incomparable with the phase 1 baseline, which
+was measured at 5 s.
+
+Want the databases only, and to run the app by hand?
+
+```bash
+docker compose -f docker/docker-compose.yml up -d oltp warehouse
+uvicorn app.main:app --port 8000
+```
+
+### Generating history instead
+
+`--forever` produces data at real speed, so a month of history takes a month. To generate a
+window in a few minutes, the API has to accept a client-supplied `server_ts` — a privileged
+backfill path that is **off by default**, because `server_ts` is the only timestamp in the
+system no client can influence and that is precisely why it can be trusted.
+
+```bash
+docker compose -f docker/docker-compose.yml stop simulator
+FLEET_ALLOW_SERVER_TS_OVERRIDE=true uvicorn app.main:app --port 8000   # separate terminal
+python -m simulator --hours 6 --vehicles 40
+```
+
+The two modes are otherwise identical — same world, same job lifecycle, same entity mutations —
+so their output is comparable. The one difference shows up in the data: backfilled rows carry a
+synthetic 1–8 s transmission delay, while live rows carry whatever really happened (a few
+milliseconds locally).
 
 ## Working on this together
 
