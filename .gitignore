@@ -40,7 +40,6 @@ dist/
 # Claude Code -- local agent settings, hooks, status line, per-branch decision cache.
 # CLAUDE.md at the project root is deliberately NOT ignored: it is shared context, and a
 # newcomer cloning main should get it.
-CLAUDE.md
 .github
 
 # Subagent-driven development scratch: ledgers, briefs, review packages.
