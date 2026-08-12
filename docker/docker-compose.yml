@@ -10,7 +10,14 @@
 # different backup and uptime needs. Pointing a BI tool straight at the production OLTP is the
 # specific anti-pattern this whole project exists to replace.
 #
-# Redpanda and Debezium arrive in phase 2, Airflow (with its own third database) in phase 4.
+# Redpanda and Debezium arrived in phase 2; Airflow (with its own third database) in phase 4.
+#
+#   redpanda   the broker. Kafka wire protocol, one container, no ZooKeeper or KRaft.
+#   connect    Kafka Connect running Debezium, reading the oltp write-ahead log.
+#
+# The connector itself is registered separately, and deliberately not by this file:
+#
+#   python -m fleet_telemetry.ingest.connector --register
 #
 #   docker compose -f docker/docker-compose.yml up -d
 #   docker compose -f docker/docker-compose.yml logs -f simulator
@@ -107,6 +114,116 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
+
+  # ------------------------------------------------------------------------------------
+  # Redpanda -- the broker. Kafka wire protocol, one container, no ZooKeeper or KRaft.
+  # ------------------------------------------------------------------------------------
+  #
+  # WHY A BROKER AT ALL, when both databases are on this machine and there is one consumer.
+  #
+  # Not throughput: at the compose defaults this carries about 2 events a second. It is there
+  # to decouple failure domains. Debezium's replication slot must be drained continuously or
+  # Postgres retains WAL forever and fills the disk (see the oltp service, above). With the
+  # broker in between, draining is Connect's only job, and the Bronze loader can be down for an
+  # hour without that becoming an OLTP incident. It also makes replay possible: a consumer group
+  # can be rewound and bronze rebuilt, which reading the WAL directly cannot do because the WAL
+  # is gone the moment it is consumed.
+  #
+  # It is NOT durable storage. A topic has a retention window, not a memory -- which is why
+  # bronze.* exists downstream of it.
+  redpanda:
+    image: redpandadata/redpanda:v24.2.7
+    container_name: fleet-redpanda
+    restart: unless-stopped
+    command:
+      - redpanda
+      - start
+      # dev-container relaxes the production checks (fsync, memory locking) that make a
+      # single-node broker on a laptop refuse to start.
+      - --mode=dev-container
+      - --smp=1
+      - --memory=1G
+      # TWO LISTENERS, AND THIS IS THE PART THAT COSTS AN AFTERNOON IF IT IS WRONG.
+      #
+      # A Kafka client connects to a bootstrap address, then reconnects to whatever address the
+      # broker ADVERTISES. One listener cannot serve both sides: Connect resolves `redpanda`,
+      # the host does not; the host reaches 127.0.0.1:19092, the container cannot. Advertise one
+      # address and the other side connects, gets told to go somewhere unreachable, and fails
+      # with a timeout that looks like the broker is down.
+      #
+      # 19092 externally, matching KAFKA_DEFAULT_BOOTSTRAP in src/fleet_telemetry/config.py.
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://127.0.0.1:19092
+      # Connect creates its own three internal topics, and Debezium creates one per captured
+      # table. Without this they must all be created by hand before anything works.
+      #
+      # TWO ARGV ENTRIES, NOT `--set=key=value`. rpk parses its own flags and forwards the
+      # rest to the redpanda binary; it does not recognise the equals form of --set, so it
+      # passes the whole string through and redpanda dies with
+      #   Argument parse error: unrecognised option '--set=redpanda.auto_create_topics_enabled=true'
+      # in a container that then restart-loops. The equals form works for every other flag
+      # here, which is what makes this one worth a comment.
+      - --set
+      - redpanda.auto_create_topics_enabled=true
+    ports:
+      - "${KAFKA_PORT:-19092}:19092"
+      # Admin API, for `rpk` from the host.
+      - "19644:9644"
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  # ------------------------------------------------------------------------------------
+  # Kafka Connect running Debezium -- reads the OLTP write-ahead log
+  # ------------------------------------------------------------------------------------
+  #
+  # The connector itself is NOT defined here. It is registered over the REST API by
+  # `python -m fleet_telemetry.ingest.connector --register`, because its config contains a
+  # password and because registering it is an act you should be able to repeat, inspect and
+  # reverse without recreating a container.
+  connect:
+    image: quay.io/debezium/connect:3.0
+    container_name: fleet-connect
+    restart: unless-stopped
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      oltp:
+        condition: service_healthy
+    environment:
+      # Service name and CONTAINER port -- the 19092 host mapping does not exist in here.
+      BOOTSTRAP_SERVERS: redpanda:9092
+      GROUP_ID: fleet-connect
+      CONFIG_STORAGE_TOPIC: _connect_configs
+      OFFSET_STORAGE_TOPIC: _connect_offsets
+      STATUS_STORAGE_TOPIC: _connect_statuses
+      # Single-node broker: the default of 3 makes topic creation fail outright, with an error
+      # about insufficient replicas that reads as a cluster problem rather than a config one.
+      CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      STATUS_STORAGE_REPLICATION_FACTOR: 1
+      KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      # Schemas OFF. With them on, every single message carries a full Avro-style schema
+      # describing itself -- several kilobytes of identical preamble per ping, and the actual
+      # change buried under a `payload` key. Off, the message IS the Debezium envelope:
+      # before, after, source, op, ts_ms at the top level. bronze's generated columns assume
+      # this; turning schemas on silently makes every one of them null.
+      CONNECT_KEY_CONVERTER_SCHEMAS_ENABLE: "false"
+      CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+    ports:
+      - "${CONNECT_PORT:-8083}:8083"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8083/connectors || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
 
   # ------------------------------------------------------------------------------------
   # API -- the fleet application
@@ -210,3 +327,5 @@ volumes:
     name: fleet-warehouse-data
   oltp_data:
     name: fleet-oltp-data
+  redpanda_data:
+    name: fleet-redpanda-data
