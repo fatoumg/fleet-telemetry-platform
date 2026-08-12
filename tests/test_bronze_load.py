@@ -231,8 +231,17 @@ def test_a_rewound_consumer_group_does_not_duplicate_bronze(conn):
     totals = consumer.run(max_batches=40)
 
     conn.rollback()
-    assert bronze_count() == before, "a replay added rows; the dedup key is not doing its job"
     # Without this the test passes when the rewind silently did nothing: "bronze did not grow"
     # is trivially true of a replay that never happened.
     assert totals["suppressed"] > 0, "nothing was replayed, so nothing was proven"
-    assert totals["inserted"] == 0, "a replayed message inserted a row it should have matched"
+
+    # Bronze grew by exactly the genuinely-new messages and not one row more.
+    #
+    # Not `== before`, and not `inserted == 0`: this pipeline is watching a live database that
+    # the rest of the suite is also writing to, so tests/test_app.py's inserts and deletes turn
+    # into real change events that this consumer is right to land. Asserting nothing was
+    # inserted made the test fail whenever it ran second, which is a statement about test
+    # ordering rather than about deduplication.
+    assert bronze_count() == before + totals["inserted"], (
+        "bronze grew by more than the new messages; the dedup key is not doing its job"
+    )
