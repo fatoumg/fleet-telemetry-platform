@@ -3,10 +3,16 @@ version: 2
 # Bronze tables, owned by the CDC consumer (src/fleet_telemetry/load/), not by dbt.
 # Declared here so Silver models reference them via source() and appear in the lineage graph.
 #
-# Tables land in phase 1. Until then these are documentation only -- deliberately with no
-# `tests:` keys, because `dbt build` runs source tests eagerly and a not_null test against a
-# table that does not exist yet fails the build rather than reporting anything useful. Column
-# tests get added in phase 1, in the same change that creates the tables they check.
+# Tables land in phase 2, created by src/fleet_telemetry/load/schema.py. The `tests:` keys below
+# arrive in the same change, as the previous version of this header promised: `dbt build` runs
+# source tests eagerly, so a not_null test against a table that does not exist fails the build
+# rather than reporting anything useful.
+#
+# EVERY SCALAR COLUMN HERE IS TEXT, INCLUDING THE OBVIOUSLY NUMERIC ONES. They are generated
+# columns, and a cast inside GENERATED ALWAYS is evaluated on INSERT -- so a device sending a
+# ping_id of "banana" would raise and take the whole batch with it, making Bronze reject exactly
+# the malformed evidence it exists to keep. Postgres 16 has no TRY_CAST. Silver casts, where a
+# bad value is a failing test rather than lost data.
 
 sources:
   - name: bronze
@@ -41,8 +47,33 @@ sources:
               must not require reprocessing every raw row.
           - name: server_ts
             description: When the application received it. Trustworthy; server clock.
+          - name: op
+            description: >
+              Debezium operation. Only c (create) and r (snapshot read) are expected here --
+              pings is append-only, so a u or a d arriving is itself a finding rather than
+              something to handle.
+          - name: _kafka_offset
+            description: >
+              The broker's coordinate for this message, and Bronze's deduplication key. The
+              application already removed device retries with ON CONFLICT (ping_id) DO NOTHING,
+              so a duplicate reaching Bronze can only be a redelivery -- which this identifies
+              exactly and ping_id does not, being null for deletes and shared between a create
+              and any later re-snapshot of the same row.
+
+              The `unique` test below is only correct because this topic has ONE partition,
+              pinned by topic.creation.default.partitions in
+              docker/debezium/fleet-connector.json. Offsets restart from zero in every new
+              partition, so a second partition would make this test fail on data that is
+              perfectly valid. The real key is (_kafka_partition, _kafka_offset), which is what
+              the unique index in load/schema.py actually enforces; raise the partition count
+              and this test must become a combination test.
+            tests:
+              - not_null
+              - unique
           - name: _ingested_at
             description: When Bronze wrote the row.
+            tests:
+              - not_null
 
       - name: raw_cdc_entities
         description: >
@@ -62,7 +93,18 @@ sources:
           - name: source_ts_ms
             description: >
               Commit time from the OLTP write-ahead log, not the time the consumer saw it.
-              This is the event time for SCD Type 2 validity ranges.
+              This is the event time for SCD Type 2 validity ranges. Text, not bigint -- see
+              the header.
+          - name: _kafka_offset
+            description: >
+              Broker coordinate. Four topics land in this table, so uniqueness here is
+              (_topic, _kafka_partition, _kafka_offset) rather than the offset alone.
+            tests:
+              - not_null
+          - name: _ingested_at
+            description: When Bronze wrote the row.
+            tests:
+              - not_null
 
       - name: raw_job_events
         description: >
@@ -76,3 +118,30 @@ sources:
             description: Status before the transition; null for the initial event.
           - name: to_status
             description: Status after the transition.
+          - name: _kafka_offset
+            description: Broker coordinate, and Bronze's deduplication key. See raw_ping_events.
+            tests:
+              - not_null
+              - unique
+          - name: _ingested_at
+            description: When Bronze wrote the row.
+            tests:
+              - not_null
+
+      - name: poll_rows
+        description: >
+          Output of the naive batch poller (src/fleet_telemetry/ingest/poller.py), kept so the
+          two ingestion paths can be diffed against one simulator run. NOT a source for any
+          Silver model, deliberately: it holds current-state row images, so it has no op code
+          and no before-image, and it is missing every change that happened between two polls
+          plus every delete that ever occurred. The absence is the finding -- see
+          docs/learn/02-ingestion.md.
+        columns:
+          - name: source_table
+            description: Which OLTP table the row image came from.
+          - name: row_image
+            description: The row exactly as the poller selected it. Current state, not a change.
+          - name: watermark_value
+            description: >
+              The watermark value that caused this row to be selected. Kept so a leaked
+              watermark is diagnosable after the fact rather than merely suspected.

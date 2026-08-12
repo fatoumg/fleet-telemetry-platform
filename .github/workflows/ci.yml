@@ -88,6 +88,13 @@ jobs:
             -c "CREATE SCHEMA IF NOT EXISTS gold;" \
             -c "CREATE SCHEMA IF NOT EXISTS marts;"
 
+      # Bronze is owned by the Python loader, not by dbt, so these tables do not exist until
+      # this runs -- and the source tests added in phase 2 would fail the build without them.
+      # It needs no broker and no data: the tests assert not_null and unique, which hold
+      # vacuously on an empty table and would still catch a column that went missing.
+      - name: Apply the bronze schema
+        run: python -m fleet_telemetry.load.schema
+
       - name: dbt parse
         run: dbt parse --project-dir dbt --profiles-dir dbt --target ci
 
