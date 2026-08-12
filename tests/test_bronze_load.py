@@ -18,7 +18,7 @@ import json
 import pytest
 
 from fleet_telemetry import config
-from fleet_telemetry.load import schema
+from fleet_telemetry.load import schema, writer
 
 pytestmark = pytest.mark.integration
 
@@ -131,3 +131,58 @@ def test_the_same_kafka_offset_cannot_land_twice(conn):
     conn.rollback()
 
     assert n == 1
+
+
+def _row(offset: int, table: str = "raw_ping_events", **kwargs) -> writer.BronzeRow:
+    defaults = {
+        "table": table,
+        "topic": "fleet.public.pings",
+        "partition": 0,
+        "offset": offset,
+        "timestamp": 1_754_568_000_000,
+        "payload": json.dumps({"op": "c", "after": {"ping_id": f"id-{offset}"}}),
+        "raw_payload": None,
+        "parse_error": None,
+    }
+    return writer.BronzeRow(**{**defaults, **kwargs})
+
+
+def test_write_reports_inserted_and_suppressed(conn):
+    """The suppressed count is the point. At-least-once delivery is a slogan until it is a
+    number you can watch go up after a restart."""
+    rows = [_row(4_000_001), _row(4_000_002)]
+    inserted, suppressed = writer.write(conn, rows)
+    assert (inserted, suppressed) == (2, 0)
+
+    replayed, suppressed = writer.write(conn, [*rows, _row(4_000_003)])
+    assert (replayed, suppressed) == (1, 2)
+    conn.rollback()
+
+
+def test_a_batch_spanning_two_tables_writes_to_both(conn):
+    """One poll returns messages from every subscribed topic, so a batch is heterogeneous."""
+    rows = [
+        _row(5_000_001, table="raw_ping_events"),
+        _row(
+            5_000_001,
+            table="raw_cdc_entities",
+            topic="fleet.public.vehicles",
+            payload=json.dumps({"op": "u", "source": {"table": "vehicles"}}),
+        ),
+    ]
+    inserted, suppressed = writer.write(conn, rows)
+    assert (inserted, suppressed) == (2, 0)
+    conn.rollback()
+
+
+def test_a_malformed_row_does_not_take_the_batch_with_it(conn):
+    """The failure mode that would defeat the whole design: one bad message rolling back the
+    good ones, so the offsets advance past data that never landed."""
+    rows = [
+        _row(6_000_001),
+        _row(6_000_002, payload=None, raw_payload="{not json", parse_error="Expecting"),
+        _row(6_000_003),
+    ]
+    inserted, suppressed = writer.write(conn, rows)
+    assert (inserted, suppressed) == (3, 0)
+    conn.rollback()
