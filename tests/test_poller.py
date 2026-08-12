@@ -8,7 +8,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
+from fleet_telemetry import config
 from fleet_telemetry.ingest import poller
+from fleet_telemetry.load import schema
 
 T0 = datetime(2026, 8, 11, 12, 0, 0, tzinfo=UTC)
 
@@ -44,3 +48,49 @@ def test_the_watermark_never_moves_backwards():
     forever, or -- with a strict `>` -- skip the ones in between."""
     rows = [{"server_ts": T0 - timedelta(seconds=3)}]
     assert poller.next_watermark(rows, "server_ts", T0) == T0
+
+
+@pytest.fixture()
+def databases():
+    """Both connections, and a bronze schema that exists."""
+    psycopg = pytest.importorskip("psycopg")
+    try:
+        oltp = psycopg.connect(config.oltp().dsn(), connect_timeout=3)
+        warehouse = psycopg.connect(config.warehouse().dsn(), connect_timeout=3)
+    except Exception as exc:
+        pytest.skip(f"databases not reachable ({type(exc).__name__}); start docker compose")
+    schema.apply(warehouse)
+    with warehouse.cursor() as cur:
+        cur.execute("delete from bronze.poll_rows")
+        cur.execute("delete from bronze.poll_watermarks")
+    warehouse.commit()
+    with oltp, warehouse:
+        yield oltp, warehouse
+
+
+@pytest.mark.integration
+def test_a_second_poll_with_no_changes_lands_nothing(databases):
+    """The watermark is doing its job if and only if this is true."""
+    oltp, warehouse = databases
+    poller.poll_once(oltp, warehouse)
+    second = poller.poll_once(oltp, warehouse)
+    assert sum(second.values()) == 0
+
+
+@pytest.mark.integration
+def test_a_changed_row_is_picked_up_on_the_next_poll(databases):
+    oltp, warehouse = databases
+    poller.poll_once(oltp, warehouse)
+    with oltp.cursor() as cur:
+        cur.execute("update depots set name = name where depot_id = 1")
+    oltp.commit()
+
+    landed = poller.poll_once(oltp, warehouse)
+    assert landed["depots"] == 1
+
+    with warehouse.cursor() as cur:
+        cur.execute(
+            "select row_image ->> 'depot_id' from bronze.poll_rows "
+            "where source_table = 'depots' order by poll_row_id desc limit 1"
+        )
+        assert cur.fetchone()[0] == "1"
