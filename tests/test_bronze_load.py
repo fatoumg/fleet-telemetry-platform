@@ -186,3 +186,53 @@ def test_a_malformed_row_does_not_take_the_batch_with_it(conn):
     inserted, suppressed = writer.write(conn, rows)
     assert (inserted, suppressed) == (3, 0)
     conn.rollback()
+
+
+def test_a_rewound_consumer_group_does_not_duplicate_bronze(conn):
+    """The restart guarantee, end to end and against a real broker.
+
+    Rewinding the group is the strongest possible version of a restart: it replays messages
+    that certainly landed. If bronze grows, the deduplication key is wrong.
+    """
+    pytest.importorskip("confluent_kafka")
+    from confluent_kafka import Consumer, TopicPartition
+
+    from fleet_telemetry.ingest import consumer, envelope
+
+    def bronze_count() -> int:
+        with conn.cursor() as cur:
+            cur.execute(
+                "select (select count(*) from bronze.raw_ping_events) "
+                "     + (select count(*) from bronze.raw_cdc_entities) "
+                "     + (select count(*) from bronze.raw_job_events)"
+            )
+            return cur.fetchone()[0]
+
+    conn.rollback()
+    before = bronze_count()
+    if before == 0:
+        pytest.skip("bronze is empty; register the connector and run the consumer first")
+
+    # Rewind by hand -- the same thing `rpk group seek bronze-loader --to start` does.
+    broker = config.kafka()
+    client = Consumer(
+        {
+            "bootstrap.servers": broker.bootstrap_servers,
+            "group.id": broker.consumer_group,
+            "enable.auto.commit": False,
+        }
+    )
+    client.commit(
+        offsets=[TopicPartition(topic, 0, 0) for topic in sorted(envelope.TOPIC_TABLES)],
+        asynchronous=False,
+    )
+    client.close()
+
+    totals = consumer.run(max_batches=40)
+
+    conn.rollback()
+    assert bronze_count() == before, "a replay added rows; the dedup key is not doing its job"
+    # Without this the test passes when the rewind silently did nothing: "bronze did not grow"
+    # is trivially true of a replay that never happened.
+    assert totals["suppressed"] > 0, "nothing was replayed, so nothing was proven"
+    assert totals["inserted"] == 0, "a replayed message inserted a row it should have matched"
