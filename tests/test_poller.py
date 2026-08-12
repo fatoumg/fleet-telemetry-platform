@@ -94,3 +94,84 @@ def test_a_changed_row_is_picked_up_on_the_next_poll(databases):
             "where source_table = 'depots' order by poll_row_id desc limit 1"
         )
         assert cur.fetchone()[0] == "1"
+
+
+# Ids above the seeded fleet and above what the simulator touches, so teardown is exact --
+# the same discipline as tests/test_app.py:32-38. Test rows left in the OLTP poison every
+# profiler measurement.
+TEST_VEHICLE_ID = 9401
+TEST_DRIVER_ID = 9401
+
+
+@pytest.mark.integration
+def test_a_poller_can_never_see_a_delete(databases):
+    """Failure 1, and the cleanest argument for CDC that exists.
+
+    A deleted row has no updated_at to exceed a watermark. No polling frequency helps: the row
+    is not there to be selected. DELETE /vehicles/{id} is a hard delete for exactly this
+    demonstration (app/main.py:318-323).
+    """
+    oltp, warehouse = databases
+    with oltp.cursor() as cur:
+        cur.execute(
+            "insert into vehicles (vehicle_id, plate, capacity, home_depot_id) "
+            "values (%s, %s, 14, 1)",
+            (TEST_VEHICLE_ID, f"TEST-{TEST_VEHICLE_ID}"),
+        )
+    oltp.commit()
+
+    poller.poll_once(oltp, warehouse)  # sees the insert
+
+    with oltp.cursor() as cur:
+        cur.execute("delete from vehicles where vehicle_id = %s", (TEST_VEHICLE_ID,))
+    oltp.commit()
+
+    landed = poller.poll_once(oltp, warehouse)
+    assert landed["vehicles"] == 0, "a poller reporting a delete would mean the test is wrong"
+
+    with warehouse.cursor() as cur:
+        cur.execute(
+            "select count(*) from bronze.poll_rows where source_table = 'vehicles' "
+            "and row_image ->> 'vehicle_id' = %s",
+            (str(TEST_VEHICLE_ID),),
+        )
+        # One row: the insert. Nothing records that the vehicle ceased to exist.
+        assert cur.fetchone()[0] == 1
+
+
+@pytest.mark.integration
+def test_two_changes_between_polls_collapse_into_one(databases):
+    """Failure 2. The measured version of this is in docs/source-system-reference.md: the
+    simulator made 12 vehicle reassignments and the OLTP shows 8 changed rows. Four committed
+    changes are unrecoverable by any poller at any frequency."""
+    oltp, warehouse = databases
+    with oltp.cursor() as cur:
+        cur.execute(
+            "insert into drivers (driver_id, full_name, home_depot_id) values (%s, %s, 1)",
+            (TEST_DRIVER_ID, "Poller Test Driver"),
+        )
+    oltp.commit()
+    poller.poll_once(oltp, warehouse)
+
+    with oltp.cursor() as cur:
+        cur.execute("update drivers set home_depot_id = 5 where driver_id = %s", (TEST_DRIVER_ID,))
+        oltp.commit()
+        cur.execute("update drivers set home_depot_id = 1 where driver_id = %s", (TEST_DRIVER_ID,))
+        oltp.commit()
+
+    landed = poller.poll_once(oltp, warehouse)
+    assert landed["drivers"] == 1, "two commits, one observation"
+
+    with warehouse.cursor() as cur:
+        cur.execute(
+            "select row_image ->> 'home_depot_id' from bronze.poll_rows "
+            "where source_table = 'drivers' and row_image ->> 'driver_id' = %s "
+            "order by poll_row_id desc limit 1",
+            (str(TEST_DRIVER_ID),),
+        )
+        # Back to 1. Depot 5 was real, was committed, and is now unrecoverable.
+        assert cur.fetchone()[0] == "1"
+
+    with oltp.cursor() as cur:
+        cur.execute("delete from drivers where driver_id = %s", (TEST_DRIVER_ID,))
+    oltp.commit()
