@@ -94,9 +94,33 @@
           }
         ]
       },
-      "PowerShell(python -m ruff check .)",
-      "PowerShell(python -m ruff format .)",
-      "PowerShell(python -m pytest tests/test_simulator_forever.py -q 2>&1)"
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PowerShell(python -m ruff check .)"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PowerShell(python -m ruff format .)"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PowerShell(python -m pytest tests/test_simulator_forever.py -q 2>&1)"
+          }
+        ]
+      }
     ]
   }
 }
