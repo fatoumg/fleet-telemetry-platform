@@ -157,6 +157,41 @@ CREATE INDEX jobs_updated_at_idx ON jobs (updated_at);
 CREATE INDEX jobs_vehicle_idx    ON jobs (vehicle_id);
 
 -- --------------------------------------------------------------------------------------
+-- REPLICA IDENTITY -- what the write-ahead log remembers about a row that CHANGED
+-- --------------------------------------------------------------------------------------
+--
+-- Set here, with the tables, for the same reason wal_level=logical is set in the compose file
+-- rather than in phase 2: it belongs to the shape of the source system, and discovering it
+-- late means discovering it from wrong data rather than from an error.
+--
+-- The default is REPLICA IDENTITY DEFAULT, which writes only the PRIMARY KEY of the old row to
+-- the WAL on an update or a delete. Debezium can only report what the WAL contains, so with
+-- the default every change event's `before` image is missing every non-key column.
+--
+-- It does not arrive as null, which would at least be honest. Debezium fills the columns it
+-- was not given with TYPE DEFAULTS, so the delete of a vehicle produced:
+--
+--   before: {"vehicle_id": 9501, "plate": "", "capacity": 0, "home_depot_id": 0,
+--            "created_at": "1970-01-01T00:00:00Z", "current_driver_id": null}
+--
+-- Only vehicle_id is real. The rest is a plausible-looking row that never existed, and a Type 2
+-- dimension built from it would record that the vehicle had an empty plate and capacity zero at
+-- the moment it was deleted. That is worse than missing data: it is fabricated history that
+-- passes every not_null test you would think to write.
+--
+-- FULL makes Postgres write the entire old row. The cost is real -- more WAL per update, and a
+-- replica applying these changes without a key does a sequential scan per row -- which is why
+-- it is applied to the four MUTABLE entities only.
+--
+-- `pings` and `job_events` are deliberately left at DEFAULT: they are append-only, so they have
+-- no updates and no deletes for a before-image to describe, and pings is the table where the
+-- extra WAL would actually cost something (~172,800 rows in the phase 1 baseline alone).
+ALTER TABLE depots   REPLICA IDENTITY FULL;
+ALTER TABLE drivers  REPLICA IDENTITY FULL;
+ALTER TABLE vehicles REPLICA IDENTITY FULL;
+ALTER TABLE jobs     REPLICA IDENTITY FULL;
+
+-- --------------------------------------------------------------------------------------
 -- job_events -- append-only transition log
 -- --------------------------------------------------------------------------------------
 --
