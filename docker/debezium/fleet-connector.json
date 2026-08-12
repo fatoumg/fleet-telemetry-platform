@@ -1,0 +1,22 @@
+{
+  "name": "fleet-oltp",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "plugin.name": "pgoutput",
+    "database.hostname": "oltp",
+    "database.port": "5432",
+    "database.dbname": "fleet",
+    "database.user": "${OLTP_USER}",
+    "database.password": "${OLTP_PASSWORD}",
+    "topic.prefix": "fleet",
+    "slot.name": "fleet_debezium",
+    "publication.name": "fleet_publication",
+    "publication.autocreate.mode": "filtered",
+    "table.include.list": "public.pings,public.job_events,public.vehicles,public.drivers,public.depots,public.jobs",
+    "snapshot.mode": "initial",
+    "tombstones.on.delete": "false",
+    "heartbeat.interval.ms": "10000",
+    "topic.creation.default.replication.factor": "1",
+    "topic.creation.default.partitions": "1"
+  }
+}

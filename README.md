@@ -72,8 +72,15 @@ simulator/
 src/fleet_telemetry/
   config.py        settings resolution (env -> .env -> built-in default)
   profile_source.py  phase 1: measure the source system
-  ingest/          Bronze: Kafka CDC -> raw events
-  load/            Bronze -> bronze.* tables
+  ingest/
+    poller.py      phase 2 step 1: the naive batch poller, built to lose
+    connector.py   registers Debezium over the Connect REST API
+    envelope.py    topic -> bronze table, and a decoder that never drops a message
+    consumer.py    the CDC loop; offsets commit only after the database does
+    compare.py     what each ingestion path captured -- the phase 2 deliverable
+  load/
+    schema.py      all bronze DDL, owned here rather than by dbt
+    writer.py      the only thing that writes bronze.*
 dbt/               Silver, Gold, marts -- all business logic lives here
 dags/              Airflow DAGs (phase 4)
 tests/
@@ -87,7 +94,7 @@ a built-in default matching the compose file, so a fresh clone runs with no `.en
 You need Docker and Python 3.13.
 
 ```bash
-pip install -e ".[app,dev]"          # or: uv sync --extra app --extra dev
+pip install -e ".[app,warehouse,dev]"   # or: uv sync --extra app --extra warehouse --extra dev
 pre-commit install                   # ruff, secret scanning; without this the hooks never run
 docker compose -f docker/docker-compose.yml up -d
 python -m fleet_telemetry.config     # shows what resolved, and what fell back to defaults
@@ -97,17 +104,19 @@ pytest
 If all five succeed you have a working environment. Then start with
 [docs/learn/](docs/learn/README.md).
 
-**Extras arrive with the phase that needs them**, so the install above is deliberately not
-everything: `[warehouse]` (dbt, Kafka client) lands in phase 2, `[airflow]` in phase 4. `[dev]`
-alone is not enough to run the tests — the suite imports the application, so `[app]` is required
-too.
+**Extras arrive with the phase that needs them.** `[warehouse]` (dbt, Kafka client) landed in
+phase 2 and is in the install above; `[airflow]` arrives in phase 4. `[dev]` alone is not enough
+to run the tests — the suite imports both the application and the loader, so `[app]` and
+`[warehouse]` are required too.
 
-Four containers come up:
+Six containers come up:
 
 | Service | What it is | Port |
 | --- | --- | --- |
 | `oltp` | the source system | 55433 |
-| `warehouse` | PostGIS + TimescaleDB, empty until phase 2 | 55432 |
+| `warehouse` | PostGIS + TimescaleDB; `bronze.*` from phase 2 | 55432 |
+| `redpanda` | the broker, Kafka wire protocol | 19092 |
+| `connect` | Kafka Connect running Debezium | 8083 |
 | `api` | the fleet application | 8000 |
 | `simulator` | stands in for real vehicles; runs continuously | — |
 
@@ -125,6 +134,43 @@ is up. Airflow will orchestrate the things that consume this data.
 docker compose -f docker/docker-compose.yml logs -f simulator     # watch it
 docker compose -f docker/docker-compose.yml stop simulator        # pause the world
 docker compose -f docker/docker-compose.yml start simulator       # resume
+```
+
+## Running the ingestion (phase 2)
+
+Two paths into `bronze.*`, deliberately. The poller is the naive version and is meant to lose;
+the diff between what each captured is the phase 2 deliverable —
+see [docs/learn/02-ingestion.md](docs/learn/02-ingestion.md).
+
+```bash
+python -m fleet_telemetry.load.schema             # create bronze.* (idempotent)
+python -m fleet_telemetry.ingest.connector --register   # register Debezium
+
+python -m fleet_telemetry.ingest.consumer         # CDC -> bronze.raw_*, until interrupted
+python -m fleet_telemetry.ingest.poller           # poller -> bronze.poll_rows
+python -m fleet_telemetry.ingest.compare          # what each one captured
+```
+
+The consumer and the poller both create the bronze schema on startup, so the first command is
+only needed if you want the tables before either runs.
+
+**Watch the replication slot.** An unconsumed slot makes Postgres retain WAL forever and
+eventually fills the disk — a real and popular way to take an instance down:
+
+```bash
+psql "postgresql://fleet:fleet@127.0.0.1:55433/fleet" -c \
+  "select slot_name, active, wal_status,
+          pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) as retained
+     from pg_replication_slots"
+```
+
+Deleting the connector does **not** drop its slot, on purpose, so a connector can be recreated
+and resume. If you are finished with it, drop it deliberately:
+
+```bash
+python -m fleet_telemetry.ingest.connector --delete
+psql "postgresql://fleet:fleet@127.0.0.1:55433/fleet" \
+  -c "select pg_drop_replication_slot('fleet_debezium')"
 ```
 
 That default writes **~173,000 rows/day, roughly 43 MB with indexes** — small enough to leave

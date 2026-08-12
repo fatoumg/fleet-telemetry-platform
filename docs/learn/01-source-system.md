@@ -250,6 +250,7 @@ Answer from memory. If you cannot, the phase is not finished, however well the c
 
 ## Next
 
-**Phase 2 — Ingestion** (`02-ingestion.md`, not written yet): getting this data out without losing or duplicating any
-of it. You will build a batch poller first, watch it fail to notice a deleted vehicle, and only
-then find out what change data capture is for.
+**Phase 2 — Ingestion** ([`02-ingestion.md`](02-ingestion.md)): getting this data out without
+losing or duplicating any of it. You build a batch poller first, watch it fail to notice a
+deleted vehicle, and only then find out what change data capture is for. The four changes
+missing from question 6 above turn up there — in `bronze.raw_cdc_entities`, with before-images.

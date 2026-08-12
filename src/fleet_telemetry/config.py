@@ -85,6 +85,14 @@ WAREHOUSE_DEFAULTS = {
 
 KAFKA_DEFAULT_BOOTSTRAP = "127.0.0.1:19092"
 
+# The consumer group the Bronze loader joins. Named here rather than hardcoded in the consumer
+# because rewinding a group -- `rpk group seek bronze-loader --to start` -- is a deliberate
+# operation, and an operation you can perform needs a name you can find.
+KAFKA_DEFAULT_GROUP = "bronze-loader"
+
+# Kafka Connect's REST API. Where the Debezium connector is registered and inspected.
+CONNECT_DEFAULT_URL = "http://127.0.0.1:8083"
+
 # The app authenticates with a static bearer token. It is not real security; it exists so the
 # simulator behaves like a client rather than writing to the database behind the app's back.
 API_TOKEN_DEFAULT = "local-dev-token"
@@ -133,10 +141,19 @@ class DatabaseConfig:
 
 @dataclass(frozen=True)
 class KafkaConfig:
-    """Broker endpoint. Redpanda locally; wire-compatible with Kafka."""
+    """Broker endpoint, consumer group, and the Connect REST API.
+
+    Redpanda locally; wire-compatible with Kafka.
+
+    `defaulted` is a frozenset rather than a bool, matching DatabaseConfig: with three fields,
+    "something fell back" stopped being a useful answer. A defaulted broker address locally is
+    expected; a defaulted one anywhere else means configuration did not arrive.
+    """
 
     bootstrap_servers: str
-    defaulted: bool = False
+    consumer_group: str
+    connect_url: str
+    defaulted: frozenset[str] = frozenset()
 
 
 # --------------------------------------------------------------------------------------
@@ -218,8 +235,20 @@ def warehouse(env: Mapping[str, str] | None = None) -> DatabaseConfig:
 
 def kafka(env: Mapping[str, str] | None = None) -> KafkaConfig:
     """Broker carrying Debezium change events out of the OLTP database."""
-    value = _get(env, "KAFKA_BOOTSTRAP_SERVERS")
-    return KafkaConfig(bootstrap_servers=value or KAFKA_DEFAULT_BOOTSTRAP, defaulted=value is None)
+    fields = {
+        "bootstrap_servers": ("KAFKA_BOOTSTRAP_SERVERS", KAFKA_DEFAULT_BOOTSTRAP),
+        "consumer_group": ("KAFKA_CONSUMER_GROUP", KAFKA_DEFAULT_GROUP),
+        "connect_url": ("DEBEZIUM_CONNECT_URL", CONNECT_DEFAULT_URL),
+    }
+    resolved: dict[str, str] = {}
+    defaulted: set[str] = set()
+    for field, (var, fallback) in fields.items():
+        value = _get(env, var)
+        if value is None:
+            value = fallback
+            defaulted.add(field)
+        resolved[field] = value
+    return KafkaConfig(defaulted=frozenset(defaulted), **resolved)
 
 
 def api_token(env: Mapping[str, str] | None = None) -> str:
@@ -273,7 +302,9 @@ def describe(env: Mapping[str, str] | None = None) -> list[tuple[str, bool, str]
         (
             "Kafka",
             not broker.defaulted,
-            broker.bootstrap_servers + (" [default]" if broker.defaulted else ""),
+            f"{broker.bootstrap_servers} group={broker.consumer_group} "
+            f"connect={broker.connect_url}"
+            + (f" [defaults: {', '.join(sorted(broker.defaulted))}]" if broker.defaulted else ""),
         ),
         ("API token", not token_defaulted, mask(token) + (" [default]" if token_defaulted else "")),
         ("API URL", not url_defaulted, url + (" [default]" if url_defaulted else "")),

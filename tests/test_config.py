@@ -180,3 +180,25 @@ def test_main_output_never_contains_a_secret(capsys, monkeypatch):
         "api-token-must-not-appear",
     ):
         assert value not in printed
+
+
+def test_kafka_settings_default_and_override():
+    """The consumer group is a real configured object, not a literal buried in the consumer.
+
+    Rewinding a group to replay bronze means naming it, so it belongs with everything else that
+    knows where settings come from.
+    """
+    default = config.kafka({})
+    assert default.consumer_group == config.KAFKA_DEFAULT_GROUP
+    assert default.connect_url == config.CONNECT_DEFAULT_URL
+    assert default.defaulted == frozenset({"bootstrap_servers", "consumer_group", "connect_url"})
+
+    explicit = config.kafka(
+        {
+            "KAFKA_BOOTSTRAP_SERVERS": "broker:9092",
+            "KAFKA_CONSUMER_GROUP": "replay-2026-08-11",
+            "DEBEZIUM_CONNECT_URL": "http://connect:8083",
+        }
+    )
+    assert explicit.consumer_group == "replay-2026-08-11"
+    assert explicit.defaulted == frozenset()

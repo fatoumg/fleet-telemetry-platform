@@ -1,15 +1,126 @@
 {
+  "statusLine": {
+    "type": "command",
+    "command": "py -3 .claude/scripts/statusline.py"
+  },
   "permissions": {
     "allow": [
+      "Read",
+      "Glob",
+      "Grep",
+      "Read(./**/*)",
+      "Write(./**/*)",
+      "Bash(python:*)",
+      "Bash(pytest:*)",
+      "Bash(ruff:*)",
+      "Bash(pre-commit run:*)",
+      "Bash(dbt parse:*)",
+      "Bash(dbt build:*)",
+      "Bash(dbt run:*)",
+      "Bash(dbt test:*)",
+      "Bash(docker compose:*)",
+      "Bash(docker ps:*)",
+      "Bash(docker logs:*)",
+      "Bash(uvicorn:*)",
       "Bash(python -)",
       "Bash(python -c \"from app.main import app; print\\('import OK:', len\\(app.routes\\), 'routes'\\)\")",
       "Bash(python -c \"import simulator.run; print\\('simulator imports OK'\\)\")",
       "Bash(python -m simulator --vehicles 40 --hours 6 --api http://127.0.0.1:8000)",
       "Bash(python -m fleet_telemetry.profile_source)",
       "Bash(python -m simulator --reset --vehicles 40 --hours 6 --api http://127.0.0.1:8000)",
-      "PowerShell(python -m ruff check .)",
-      "PowerShell(python -m ruff format .)",
-      "PowerShell(python -m pytest tests/test_simulator_forever.py -q 2>&1)"
+      "Bash(gh pr view:*)",
+      "Bash(gh pr diff:*)",
+      "Bash(gh pr edit:*)",
+      "Bash(gh pr comment:*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh api:*)",
+      "Bash(gh issue view:*)",
+      "Bash(gh issue edit:*)",
+      "Bash(gh label list:*)",
+      "Bash(gh search issues:*)",
+      "Bash(git log:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git add:*)",
+      "WebSearch"
+    ],
+    "deny": [
+      "Read(.env)",
+      "Read(.env.*)",
+      "Read(**/*.pem)",
+      "Read(**/*.key)",
+      "Read(**/*.pfx)",
+      "Read(**/*.p12)",
+      "Read(**/.pypirc)",
+      "Read(.aws/**)",
+      "Read(.ssh/**)",
+      "Write(.env)",
+      "Write(.env.*)",
+      "Write(**/*.pem)",
+      "Write(**/*.key)",
+      "Write(**/*.pfx)",
+      "Write(**/*.p12)",
+      "Write(**/.pypirc)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/block-dangerous.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/format-python.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/check-python.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PowerShell(python -m ruff check .)"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PowerShell(python -m ruff format .)"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PowerShell(python -m pytest tests/test_simulator_forever.py -q 2>&1)"
+          }
+        ]
+      }
     ]
   }
 }

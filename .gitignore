@@ -36,3 +36,12 @@ standalone_admin_password.txt
 build/
 dist/
 .ruff_cache/
+
+# Claude Code -- local agent settings, hooks, status line, per-branch decision cache.
+# CLAUDE.md at the project root is deliberately NOT ignored: it is shared context, and a
+# newcomer cloning main should get it.
+.github
+
+# Subagent-driven development scratch: ledgers, briefs, review packages.
+# Git history is the record; this is working state for an in-flight plan.
+.superpowers/
