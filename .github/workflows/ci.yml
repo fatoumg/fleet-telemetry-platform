@@ -95,6 +95,19 @@ jobs:
       - name: Apply the bronze schema
         run: python -m fleet_telemetry.load.schema
 
+      # PROVES THE SQL PARSES AND RUNS. IT PROVES NOTHING ABOUT THE NUMBERS.
+      #
+      # Bronze is empty here, so every script produces zero rows, every cast is exercised against
+      # nothing, and every reconciliation holds vacuously. What this does catch is the class of
+      # error that cost the most time to find by hand: a column renamed in load/schema.py without
+      # sql/silver being updated, a typo, a function that does not exist on this PostGIS build.
+      #
+      # Said out loud because a green check here reads like coverage and is not. The properties
+      # that matter -- the grain, the reconciliation, the lat/lon orientation -- are asserted in
+      # tests/test_transform.py, which needs a populated database and therefore does not run in CI.
+      - name: Run the hand-written Silver scripts
+        run: python -m fleet_telemetry.transform.run
+
       - name: dbt parse
         run: dbt parse --project-dir dbt --profiles-dir dbt --target ci
 

@@ -51,6 +51,18 @@ Deleting the connector does not drop its replication slot, deliberately, so it c
 and resume. Drop it explicitly with `select pg_drop_replication_slot('fleet_debezium')` when
 finished, or Postgres retains WAL until the disk fills.
 
+### Transformation (phase 3)
+
+```bash
+python -m fleet_telemetry.transform.run      # sql/silver/*.sql -> silver_manual.*
+```
+
+Runs the hand-written Silver scripts in **filename order**, with no dependency resolution — that
+absence is the phase 3 step 1 lesson, and the findings are in `docs/silver-by-hand.md`. Target
+schema is `silver_manual`, never `silver`: dbt owns `silver` and would drop same-named tables on its
+first run, destroying the artifact and the dbt-vs-hand diff with it. `tests/test_transform.py` pins
+both the schema name and the script order.
+
 ### Tests
 
 ```bash
@@ -149,7 +161,9 @@ is the specific anti-pattern this project exists to replace.
 | `src/fleet_telemetry/config.py` | The only place that knows where settings come from |
 | `src/fleet_telemetry/profile_source.py` | Source-system profiler — the phase 1 deliverable |
 | `src/fleet_telemetry/ingest/` | `poller.py` (naive path), `connector.py` (Debezium registrar), `envelope.py` (routing/decode, no Kafka import), `consumer.py` (the CDC loop), `compare.py` (the phase 2 diff) |
-| `src/fleet_telemetry/load/` | `schema.py` (all bronze DDL), `writer.py` (the only writer of `bronze.*`) |
+| `src/fleet_telemetry/load/` | `schema.py` (all bronze DDL), `writer.py` (the only writer of `bronze.raw_*` — the poller owns `poll_rows` and `poll_watermarks`, whose rows have no Kafka coordinate) |
+| `src/fleet_telemetry/transform/` | `run.py` — executes `sql/silver/*.sql` in filename order. No business logic; every rule is in the SQL |
+| `sql/silver/` | Silver as hand-written SQL (phase 3 step 1), targeting `silver_manual`. Built to be superseded by `dbt/`, and kept afterwards like `poller.py` was |
 | `docker/debezium/` | Connector config. Credentials are `${...}` placeholders filled by `connector.py` from `config.py` |
 | `dbt/` | Silver, Gold, marts — all business logic |
 | `dags/` | Airflow DAGs (phase 4) |

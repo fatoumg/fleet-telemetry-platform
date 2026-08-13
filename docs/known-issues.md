@@ -15,13 +15,13 @@ lists them so they are not mistaken for entries in this register.
 | --- | --- | --- | --- |
 | 1 | `REPLICA IDENTITY FULL` never reaches an existing volume | **high** — silently fabricates data | patched by hand; repo unfixed |
 | 2 | Integration tests wipe bronze and trigger a full re-ingest | **high** — destroys the durable record | open |
-| 3 | Fixed-id test rows poison every later run | medium | open |
+| 3 | Integration tests depend on state they do not own (three cases) | medium | open |
 | 4 | The watermark leak fires under the ordinary clock | medium — doc claim is wrong | open |
 | 5 | The replication slot has no lifecycle owner | medium — can fill the disk | open |
 | 6 | `DELETE /vehicles/{id}` returns 500 for every seeded vehicle | medium | open, already written up |
 | 7 | Debezium connects as the table owner | low here, ships badly | open |
-| 8 | Three `PostToolUse` hooks are permission-rule syntax | low — noise only | open |
-| 9 | `writer.py` claims to be the only writer of `bronze.*`, and is not | low — doc claim is wrong | open |
+| 8 | Misconfigured tooling in tracked files: `PostToolUse` hooks, and a `.gitignore` typo that made CI uneditable | low — noise, and one blocked edit | hooks open; `.gitignore` **fixed** |
+| 9 | `writer.py` claims to be the only writer of `bronze.*`, and is not | low — doc claim was wrong | **fixed** |
 
 ---
 
@@ -154,6 +154,78 @@ one that actually broke. Worse, the first failure's real message is buried under
 - Teardown in the fixture, not the test body — a `finally`, or a fixture that deletes the test ids
   before yielding as well as after. Cleaning up *before* is what makes a run recoverable without
   hand-editing the database.
+
+### 3b. A second case, same cause: the test that fails whenever the pipeline is running
+
+**Symptom.** `tests/test_bronze_load.py::test_a_rewound_consumer_group_does_not_duplicate_bronze`
+fails with:
+
+```text
+cimpl.KafkaException: KafkaError{code=UNKNOWN_MEMBER_ID,val=25,
+                                 str="Commit failed: Broker: Unknown member"}
+```
+
+**Cause.** The test rewinds the consumer group by committing offsets from a client that never joined
+it. That is only permitted while the group has no active member. Measured during the phase 3 work,
+with a CDC consumer left running from an earlier session:
+
+```text
+GROUP        bronze-loader
+STATE        Stable
+MEMBERS      1
+TOTAL-LAG    0
+```
+
+One live member, so an outside commit is refused — correctly, by Kafka's protocol.
+
+**Cost.** The test passes only when no consumer is running, which is the opposite of this project's
+normal operating state: the consumer is a daemon, and the README tells you to start it. So the suite
+is green on a machine where the pipeline is idle and red on one where it works, and the failure
+message points at Kafka membership rather than at the test's assumption.
+
+Same family as §3 and §2: **a test that depends on state it does not own.** Three instances now, in
+three different test files.
+
+**Fix.** Have the test own the group it rewinds — a `group.id` unique to the test run, seeded by
+consuming a few messages under that group and then rewinding it. It costs one extra consume and
+removes the dependency on what else happens to be running.
+
+### 3c. A third case, and the one where two defects compound
+
+**Symptom.** `tests/test_poller.py::test_a_poller_can_never_see_a_delete` fails intermittently:
+
+```text
+assert landed["vehicles"] == 0, "a poller reporting a delete would mean the test is wrong"
+```
+
+It passes when run alone. It failed in a full-suite run at 13:52 on 2026-08-13.
+
+**Cause.** The simulator was running, and it reassigns vehicles between depots as part of normal
+operation — measured **3 changes in the hour** around that run, one of them vehicle 9 at
+`13:51:27.940369`, inside the test's window. The poller correctly reported one changed vehicle. The
+assertion reads that as "the poller saw the delete", because it counts rows landed for the *whole
+vehicles table* rather than for the vehicle the test created. The test's own second assertion — a
+count scoped to `vehicle_id = 9401` — is the one that actually proves the claim, and it passed.
+
+**And this is where §2 makes §3 worse.** The window is not milliseconds: the fixture's unqualified
+`delete from bronze.poll_watermarks` resets the watermark to `EPOCH`, so the first `poll_once` in the
+file drains the entire source system — ~40 s at current volume. At 3 vehicle changes an hour, a 40 s
+window carries roughly a 3% chance of catching one per run. Fix §2 and this flake becomes rare
+without being fixed; fix this and it goes away regardless.
+
+**Cost.** An intermittent red suite whose message actively misdirects: it says the poller saw a
+delete, and asserts something the test does not need. A developer's first instinct will be to doubt
+the poller.
+
+**Fix.** Assert on the vehicle the test owns, not on the table:
+
+```python
+assert landed["vehicles"] == 0     # -> scope it, e.g. assert no poll_rows row for 9401
+```
+
+The scoped count already in the test is sufficient; the table-wide assertion should go. Same root
+cause as 3 and 3b — **a test that depends on state it does not own** — except here the state is the
+system under test behaving normally, which is the hardest version to notice.
 
 ---
 
@@ -306,6 +378,34 @@ harder to notice in the middle of them.
 already cover formatting and linting; if a test hook is wanted, it needs the same
 `bash .claude/hooks/...` shape.
 
+### 8b. A `.gitignore` typo that made CI uneditable
+
+**Symptom.** Staging a change to the CI workflow is refused:
+
+```text
+$ git add .github/workflows/ci.yml
+The following paths are ignored by one of your .gitignore files:
+.github
+hint: Use -f if you really want to add them.
+```
+
+`ci.yml` is tracked. It is in `HEAD`. `git ls-files .github/` lists it. It still cannot be staged.
+
+**Cause.** `.gitignore` carried the bare line `.github` under a comment block describing *Claude
+Code local agent settings* — a typo for `.claude`. Tracked files are normally exempt from
+`.gitignore`, which is why this looks impossible, but an ignored **directory** is pruned during
+pathspec expansion, so git never descends into `.github/` to notice that the file inside it is
+tracked. The refusal names `.github`, not the typo, and not the tracked file it is blocking.
+
+**Cost.** Any change to CI needs `git add -f`, or it appears to be silently skipped — and a
+developer who does not read the hint closely will conclude their edit committed when it did not. The
+prior write-up of this entry got it wrong in a way worth recording: it said *"`ci.yml` is already
+tracked so edits to it commit fine"*, which is exactly the reasonable inference, and it is false.
+
+**Fixed** on `phase-3/silver-by-hand`: the line now reads `.claude/settings.local.json`, which is
+what the surrounding comment always described. Note that `.claude/settings.json`, the hooks and the
+status line are all tracked and shared, so the block had been ignoring nothing except CI.
+
 ---
 
 ## 9. `writer.py` claims to be the only writer of `bronze.*`, and is not
@@ -332,6 +432,9 @@ inventing fields the poller cannot observe — the same argument that keeps `op`
 
 Two places to change: the `writer.py` docstring, and the `src/fleet_telemetry/load/` row in
 `CLAUDE.md`'s module-boundaries table.
+
+**Fixed** on the `phase-3/silver-by-hand` branch: both now say `bronze.raw_*` and name the poller as
+the owner of `poll_rows` and `poll_watermarks`. The structure is unchanged, deliberately.
 
 ---
 

@@ -1,4 +1,9 @@
-"""Insert decoded messages into bronze. The only thing in this project that writes bronze.*.
+"""Insert decoded messages into bronze. The only thing that writes bronze.raw_*.
+
+Not all of bronze: ingest/poller.py writes bronze.poll_rows and bronze.poll_watermarks directly,
+because a polled row has no Kafka coordinate and so cannot be a BronzeRow. Routing it through here
+would mean inventing the one field this module deduplicates on -- the same argument that keeps `op`
+and `before` out of poll_rows.
 
 No parsing, no typing, no deduplication of business keys -- all of that is dbt's
 (src/fleet_telemetry/load/__init__.py:3-4). What happens here is one INSERT per bronze table

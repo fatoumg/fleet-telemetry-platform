@@ -7,9 +7,11 @@ The domain is vehicle telemetry for informal transport in The Gambia — vehicle
 pings. The domain is **grounding, not a product.** Nobody will use the application; it exists
 to emit realistically-shaped events.
 
-Current status: **phase 1 of 5 complete.** The source system is built and running — application,
-simulator and OLTP database all come up with one command and produce data continuously. The
-warehouse stands up but is empty: nothing connects the two yet, which is phase 2's job.
+Current status: **phases 1 and 2 complete; phase 3 started.** The source system runs continuously,
+both ingestion paths land in `bronze.*`, and Silver exists as hand-written SQL — the naive version
+that [issue #12](https://github.com/fatoumg/fleet-telemetry-platform/issues/12) replaces with dbt.
+What that naive version could not catch is written up in
+[docs/silver-by-hand.md](docs/silver-by-hand.md).
 
 ## The one hard problem
 
@@ -80,7 +82,10 @@ src/fleet_telemetry/
     compare.py     what each ingestion path captured -- the phase 2 deliverable
   load/
     schema.py      all bronze DDL, owned here rather than by dbt
-    writer.py      the only thing that writes bronze.*
+    writer.py      the only writer of bronze.raw_* (the poller owns poll_rows)
+  transform/
+    run.py         phase 3 step 1: runs sql/silver/*.sql in filename order, and nothing more
+sql/silver/        phase 3 step 1: Silver as hand-written SQL, built to be replaced by dbt
 dbt/               Silver, Gold, marts -- all business logic lives here
 dags/              Airflow DAGs (phase 4)
 tests/
@@ -206,6 +211,30 @@ The two modes are otherwise identical — same world, same job lifecycle, same e
 so their output is comparable. The one difference shows up in the data: backfilled rows carry a
 synthetic 1–8 s transmission delay, while live rows carry whatever really happened (a few
 milliseconds locally).
+
+## Running the transformation (phase 3)
+
+Silver as hand-written SQL, run in filename order. This is the naive version and it is meant to be
+replaced by dbt in [issue #12](https://github.com/fatoumg/fleet-telemetry-platform/issues/12); the
+deliverable is what it could not catch, in
+[docs/silver-by-hand.md](docs/silver-by-hand.md).
+
+```bash
+python -m fleet_telemetry.transform.run     # sql/silver/*.sql -> silver_manual.*
+```
+
+It builds `silver_manual`, **not** `silver`. dbt owns `silver` and materialises staging models
+there as views, so hand-built tables sharing those names would be dropped the first time dbt runs.
+Keeping them apart means both survive and can be compared, which is what #12 gets for free:
+
+```bash
+docker exec fleet-warehouse psql -U telemetry -d telemetry \
+  -c "select * from silver_manual.stg_pings except select * from silver.stg_pings"
+```
+
+**There is no dependency resolution.** `40_ping_quality.sql` reads what `10_stg_pings.sql` writes,
+and the only thing recording that is the filename. Renaming a script reorders the build silently —
+`tests/test_transform.py` pins the order for exactly that reason.
 
 ## Working on this together
 
