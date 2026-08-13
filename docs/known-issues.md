@@ -219,8 +219,8 @@ the poller.
 
 **Fix.** Assert on the vehicle the test owns, not on the table:
 
-```python
-assert landed["vehicles"] == 0     # -> scope it, e.g. assert no poll_rows row for 9401
+```text
+assert landed["vehicles"] == 0     <- scope it to vehicle 9401, or drop it
 ```
 
 The scoped count already in the test is sufficient; the table-wide assertion should go. Same root
