@@ -17,6 +17,13 @@ stages every pipeline has.
 
 Guides appear as each phase is built. An empty slot means that phase has not started.
 
+Alongside them, two references rather than lessons — read after the phase guide, not instead of it:
+
+| Reference | What it is |
+| --- | --- |
+| `02-ingestion-code-tour.md` | What each module in `ingest/` and `load/` is for, and why the work is split that way |
+| [`../known-issues.md`](../known-issues.md) | Defects found by running the pipeline. Its §10 lists the failures that are **deliberate** — read that before fixing anything |
+
 ## How to work through this
 
 **Do not skip to the tools.** Each phase deliberately starts with the obvious hand-rolled version,

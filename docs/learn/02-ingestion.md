@@ -59,6 +59,11 @@ python -m fleet_telemetry.ingest.compare         # the diff
 
 ---
 
+A module-by-module tour of the code that implements all of this — what each file in `ingest/` and
+`load/` owns, and why the work is divided that way — is in
+[`02-ingestion-code-tour.md`](02-ingestion-code-tour.md). Read it after this guide; the ideas below
+are what it assumes.
+
 ## The six ideas in this phase
 
 ### 1. A watermark leaks in two directions
@@ -202,6 +207,10 @@ Written down before being fixed, per the working rule in `README.md`.
 | `ruff format` rewrites plan documents | It formats Python code blocks inside Markdown. A plan's snippets are fragments, and it added parentheses to make one parse, changing what it instructed. `docs/superpowers/plans` is excluded. |
 
 ### Still broken, and not fixed here
+
+Everything found by running the pipeline end to end — including two defects worse than this one —
+is in the register at [`docs/known-issues.md`](../known-issues.md). Read its §10 before fixing any
+of it: several of this phase's most conspicuous failures are deliberate.
 
 `DELETE /vehicles/{id}` returns **500** for every vehicle in the seeded dataset.
 `app/main.py` deletes `pings`, `jobs` and `vehicles`, but not `job_events`, which holds a foreign

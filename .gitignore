@@ -37,10 +37,16 @@ build/
 dist/
 .ruff_cache/
 
-# Claude Code -- local agent settings, hooks, status line, per-branch decision cache.
+# Claude Code -- per-developer local overrides only.
 # CLAUDE.md at the project root is deliberately NOT ignored: it is shared context, and a
-# newcomer cloning main should get it.
-.github
+# newcomer cloning main should get it. Neither are .claude/settings.json, the hooks or the
+# status line -- those are shared too.
+#
+# This line used to read `.github`, which was a typo for `.claude` and had teeth: an ignored
+# DIRECTORY is pruned during pathspec expansion, so `git add .github/workflows/ci.yml` was
+# refused even though ci.yml is tracked and in HEAD. CI could not be edited without -f, and the
+# refusal names .github rather than the typo. Found while adding a phase 3 step to the workflow.
+.claude/settings.local.json
 
 # Subagent-driven development scratch: ledgers, briefs, review packages.
 # Git history is the record; this is working state for an in-flight plan.
