@@ -21,6 +21,7 @@ Alongside them, two references rather than lessons — read after the phase guid
 
 | Reference | What it is |
 | --- | --- |
+| [`study-map.md`](study-map.md) | What to read to understand the ideas behind this project, in payoff order, plus every explain-back question in one checklist |
 | `02-ingestion-code-tour.md` | What each module in `ingest/` and `load/` is for, and why the work is split that way |
 | [`../known-issues.md`](../known-issues.md) | Defects found by running the pipeline. Its §10 lists the failures that are **deliberate** — read that before fixing anything |
 
