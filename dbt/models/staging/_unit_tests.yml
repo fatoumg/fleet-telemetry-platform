@@ -4,15 +4,25 @@ version: 2
 # warehouse's contents. Available because pyproject.toml pins dbt-postgres>=1.8.
 #
 # WHY THERE IS ONE HERE AND NOT ELSEWHERE. A unit test earns its place when a rule cannot be
-# checked against real data. That is exactly the situation the deduplication rule is in, and
-# docs/silver-by-hand.md section 2 measured it: bronze holds no duplicate ping_ids at all, so
-# DISTINCT ON discards nothing and stg_pings emits identical rows whether the rule is right,
-# reversed, or absent. Reading the table cannot tell you. Reading the query cannot either --
-# `ORDER BY ping_id, _kafka_partition, _kafka_offset` looks equally plausible reversed, and
-# reversed it would silently prefer a later re-snapshot over the original streamed create.
+# checked against real data, and the deduplication rule was the clearest case in the project:
+# docs/silver-by-hand.md section 2 measured 350,742 bronze rows and 350,742 distinct ping_ids, so
+# DISTINCT ON discarded nothing and stg_pings emitted identical rows whether the rule was right,
+# reversed, or absent. Reading the table could not tell you. Reading the query could not either --
+# `ORDER BY ping_id, _kafka_partition, _kafka_offset` looks equally plausible reversed.
 #
-# The grain assertion in dbt/tests/ does not settle it. It proves one row per ping_id, which is
-# true under both rules. Only supplying a duplicate settles it, and that is what this does.
+# BRONZE HAS SINCE ACQUIRED 20 GENUINE DUPLICATES -- a producer-side redelivery, both copies op='c',
+# every pair 20 offsets apart -- so the rule now does visible work. That does NOT retire this test,
+# for two reasons worth keeping:
+#
+#   1. The grain assertion still cannot settle the rule. It proves one row per ping_id, which is
+#      true under both orderings. Only supplying a KNOWN duplicate and naming which copy must
+#      survive distinguishes them.
+#   2. Because both real copies are op='c', the "prefer op='c'" tie-break cannot choose between
+#      them at all. Lowest-offset is the only rule that resolves the case that actually happened,
+#      and this fixture is what pins it.
+#
+# Written before any real duplicate existed, which is exactly when such a test has to be written --
+# an assertion added after the divergence cannot tell you which side of it was right.
 #
 # FORMAT: SQL RATHER THAN DICT, DELIBERATELY. bronze.payload is jsonb and the model applies -> and
 # #>> to it. In dict format dbt renders a fixture value as a bare literal, so the JSON arrives as

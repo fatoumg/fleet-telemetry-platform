@@ -36,10 +36,10 @@ pytestmark = pytest.mark.integration
 # bin is the one exception: CLAUDE.md requires the stg_ prefix in staging, and a naming convention
 # that holds everywhere beats the elegance of a one-liner that holds once.
 #
-# ping_quality and vehicle_day are absent on purpose. They are not ported: the design spec's layer
-# table (section 9) defines Silver as deduplication, typing, unit normalisation and geometry
-# construction, and those two are percentile aggregates and a three-way join. They stay
-# hand-written in silver_manual until the Gold ticket moves them.
+# ping_quality and vehicle_day carry no stg_ prefix in either schema -- they are aggregates over the
+# stg_ models rather than stagings of a source, and keeping the hand-written names keeps the diff a
+# one-liner for them too. All nine scripts are ported; nothing in this layer is hand-written-only,
+# and `gold` and `marts` stay empty until their own tickets.
 LAYER_PAIRS = [
     ("stg_pings", "stg_pings"),
     ("stg_vehicles", "stg_vehicles"),
@@ -48,6 +48,8 @@ LAYER_PAIRS = [
     ("stg_jobs", "stg_jobs"),
     ("stg_job_events", "stg_job_events"),
     ("stg_rejected_rows", "rejected_rows"),
+    ("ping_quality", "ping_quality"),
+    ("vehicle_day", "vehicle_day"),
 ]
 
 # THE TWO LAYERS ARE NOT THE SAME KIND OF THING, and that is what makes this diff subtle.
@@ -90,6 +92,23 @@ STRATEGY = {
     # several topics whose offsets are independent sequences, so a single max() is not a bound.
     # Frontier, grouped by topic, is well-defined across all of them.
     "stg_rejected_rows": FRONTIER,
+    # The two aggregates. They have no bronze_offset of their own to bound on, and they cannot be
+    # bounded anyway: an aggregate over a bounded prefix is not the same number as a bounded prefix
+    # of the aggregate. Their frontier comes from their upstreams instead -- see
+    # FRONTIER_UPSTREAMS.
+    "ping_quality": FRONTIER,
+    "vehicle_day": FRONTIER,
+}
+
+# Which relations' frontiers decide whether a model can be compared. Defaults to the model itself;
+# the aggregates have to ask their inputs, and vehicle_day has to ask all three, because a changed
+# vehicle or depot moves its output just as surely as a new ping does.
+#
+# The names are identical in both schemas for every relation named here, which is what lets one
+# expression be evaluated against silver and silver_manual in turn.
+FRONTIER_UPSTREAMS = {
+    "ping_quality": ["stg_pings"],
+    "vehicle_day": ["stg_pings", "stg_vehicles", "stg_depots"],
 }
 
 # The frontier expression per relation: what "how far has Bronze been consumed" means here. Grouped
@@ -139,6 +158,24 @@ def _exists(conn, schema, table):
     )
 
 
+def _frontier(conn, schema, dbt_model, relation):
+    """How far Bronze had been consumed when `schema`'s copy of `dbt_model` was produced.
+
+    `relation` is the model's own table name in that schema -- it differs from dbt_model only for
+    the reject bin. Models listed in FRONTIER_UPSTREAMS ask their inputs instead of themselves,
+    because an aggregate carries no offset column of its own.
+    """
+    if dbt_model in FRONTIER_UPSTREAMS:
+        parts = []
+        for upstream in FRONTIER_UPSTREAMS[dbt_model]:
+            value = _scalar(conn, FRONTIER_SQL["_default"].format(relation=f"{schema}.{upstream}"))
+            parts.append(f"{upstream}:{value}")
+        return ",".join(parts)
+
+    sql = FRONTIER_SQL.get(dbt_model, FRONTIER_SQL["_default"])
+    return _scalar(conn, sql.format(relation=f"{schema}.{relation}"))
+
+
 @pytest.mark.parametrize(("dbt_model", "manual_table"), LAYER_PAIRS)
 def test_dbt_silver_matches_the_hand_written_layer(warehouse, dbt_model, manual_table):
     """Both directions, because one alone passes if dbt returned a strict subset.
@@ -161,17 +198,14 @@ def test_dbt_silver_matches_the_hand_written_layer(warehouse, dbt_model, manual_
             pytest.skip(f"silver_manual.{manual_table} is empty; nothing to diff")
         where = f" where bronze_offset <= {bound}"
     else:
-        frontier = FRONTIER_SQL.get(dbt_model, FRONTIER_SQL["_default"])
-        manual_frontier = _scalar(
-            warehouse, frontier.format(relation=f"silver_manual.{manual_table}")
-        )
-        dbt_frontier = _scalar(warehouse, frontier.format(relation=f"silver.{dbt_model}"))
+        manual_frontier = _frontier(warehouse, "silver_manual", dbt_model, manual_table)
+        dbt_frontier = _frontier(warehouse, "silver", dbt_model, dbt_model)
         if manual_frontier != dbt_frontier:
             pytest.skip(
-                f"{dbt_model} is a current-state model and Bronze advanced since silver_manual "
-                f"was built (frontier {manual_frontier} vs {dbt_frontier}). It cannot be rewound "
-                "to a historical offset, so no valid comparison exists -- re-run "
-                "transform.run, ideally with the simulator stopped."
+                f"{dbt_model} cannot be rewound to a historical offset, and Bronze advanced since "
+                f"silver_manual was built (frontier {manual_frontier} vs {dbt_frontier}), so no "
+                "valid comparison exists -- re-run transform.run, ideally with the simulator "
+                "stopped."
             )
 
     manual = f"select * from silver_manual.{manual_table}{where}"

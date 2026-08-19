@@ -73,21 +73,35 @@ deduplicated AS (
     -- agreeing the moment this stops being an append-only table, which is why the reasoning is
     -- written here rather than the rule alone.
     --
-    -- MEASURED, AND UNCOMFORTABLE: bronze holds 173,062 ping rows and no duplicate ping_ids, so
-    -- this deduplication currently removes NOTHING. The query is byte-for-byte identical in
-    -- output whether the rule is right, reversed, or absent, so no amount of looking at the
-    -- result can tell you.
+    -- THIS RULE NOW DOES REAL WORK, AND FOR A LONG TIME IT DID NOT.
+    -- docs/silver-by-hand.md section 2 measured 350,742 bronze rows and 350,742 distinct ping_ids
+    -- -- deduplication removing NOTHING, so the output was byte-identical whether the rule was
+    -- right, reversed, or absent, and no amount of looking at the result could tell you.
     --
-    -- THE GRAIN ASSERTION DOES NOT CLOSE THAT GAP EITHER, and this is the thing worth
+    -- Then duplicates arrived. Measured: 190,504 usable bronze rows, 190,484 distinct ping_ids,
+    -- 20 rows removed. The shape of them is NOT what the paragraph above anticipated:
+    --
+    --     017bd8af-0265-46a0-b08c-a2e6a1039af2   c@197396  c@197416
+    --     12d84b39-f677-4af7-b5d6-6f5d90b976e1   c@197401  c@197421
+    --
+    -- BOTH COPIES CARRY op='c'. Not a create plus a later re-snapshot -- two creates, every pair
+    -- exactly 20 offsets apart: a producer-side redelivery of a single batch, which the unique
+    -- index on (_kafka_partition, _kafka_offset) cannot absorb because the copies landed at
+    -- DIFFERENT offsets. So "prefer op='c'" would not merely agree with lowest-offset here, it
+    -- would be UNABLE TO CHOOSE. Lowest offset is the only rule that resolves the case that
+    -- actually occurred, which is a stronger argument for it than the one written above.
+    --
+    -- THE GRAIN ASSERTION STILL DOES NOT PROVE THE RULE, and this is the thing worth
     -- understanding. tests/assert_stg_pings_unique_on_ping_id.sql proves the output holds no
     -- duplicate ping_id. It does NOT prove the RIGHT row survived: reverse this ORDER BY and the
     -- output still has one row per ping_id, so the grain test still passes while the model
-    -- silently prefers a later re-snapshot over the original streamed create.
+    -- silently keeps the redelivered copy instead of the original.
     --
     -- _unit_tests.yml is what closes it. Two synthetic bronze rows sharing a ping_id at offsets
-    -- 10 and 99, asserting offset 10 survives -- a duplicate that reality has not supplied.
-    -- Reverse this ORDER BY and that test fails while the grain test passes. That contrast is
-    -- the whole argument for this ticket.
+    -- 10 and 99, asserting offset 10 survives. Reverse this ORDER BY and that test fails while
+    -- the grain test passes. It was written when no real duplicate existed, which is exactly when
+    -- such a test has to be written -- an assertion added after the divergence cannot tell you
+    -- which side of it was right.
     --
     -- Ordering on (_kafka_partition, _kafka_offset), not the offset alone: the offset is only
     -- unique per partition, and this topic having one partition is a configuration choice

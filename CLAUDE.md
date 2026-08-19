@@ -64,16 +64,25 @@ first run, destroying the artifact and the dbt-vs-hand diff with it. `tests/test
 both the schema name and the script order.
 
 **Silver now exists twice, and both survive on purpose.** `sql/silver/` builds `silver_manual` and
-is the kept phase-3-step-1 artifact — the same treatment `poller.py` got in phase 2. The seven dbt
+is the kept phase-3-step-1 artifact — the same treatment `poller.py` got in phase 2. The nine dbt
 models in `dbt/models/staging/` build `silver` and are what everything downstream reads. Model names
 are identical across the two schemas so the diff is a one-liner; `rejected_rows` is the one
-exception, since staging requires the `stg_` prefix. `tests/test_dbt_silver.py` asserts all seven
+exception, since staging requires the `stg_` prefix. `tests/test_dbt_silver.py` asserts all nine
 pairs match in both directions, and the findings are in `docs/silver-in-dbt.md`.
 
-Only the six `stg_*` scripts plus the reject bin were ported. `40_ping_quality.sql` and
-`50_vehicle_day.sql` stay hand-written: percentile aggregates and a three-way join are Gold's work
-by the design spec's layer table, and `vehicle_day` is where the grain assertion finally has a
-fan-out to catch.
+**All nine scripts are ported — no schema is half-owned.** `ping_quality` and `vehicle_day` land in
+`silver` too, keeping their unprefixed names since they are aggregates over the `stg_` models rather
+than stagings of a source. Note the tension that buys: the design spec's layer table gives Gold every
+judgement call, and p50/p99, bucketing by `device_ts`, and the inner join on the vehicle dimension are
+all judgements. Whole-layer-in-one-place and a complete diff won over a clean boundary; it resolves
+when the dimensional model turns these two into mart inputs. `gold/` and `marts/` stay empty until
+their own tickets.
+
+**`vehicle_day` is the only model whose grain assertion can fail on a live hazard** — it joins three
+relations, so a duplicate upstream doubles every count, speed and distance at once. The other eight
+are `DISTINCT ON` or a single-relation `GROUP BY`, where Postgres guarantees the grain and the test is
+a regression guard. And no grain assertion catches rows the inner join *drops*, which is why that
+wrongness is documented in the model rather than tested for.
 
 ### Tests
 
@@ -177,7 +186,7 @@ is the specific anti-pattern this project exists to replace.
 | `src/fleet_telemetry/transform/` | `run.py` — executes `sql/silver/*.sql` in filename order. No business logic; every rule is in the SQL |
 | `sql/silver/` | Silver as hand-written SQL (phase 3 step 1), targeting `silver_manual`. Built to be superseded by `dbt/`, and kept afterwards like `poller.py` was |
 | `docker/debezium/` | Connector config. Credentials are `${...}` placeholders filled by `connector.py` from `config.py` |
-| `dbt/` | Silver, Gold, marts — all business logic. `models/staging/` → `silver` (seven models, views); `macros/generate_schema_name.sql` makes layer names absolute; `tests/` holds one grain assertion per model plus the geometry and reconciliation assertions. `gold/` and `marts/` are still empty |
+| `dbt/` | Silver, Gold, marts — all business logic. `models/staging/` → `silver` (nine models, views: six `stg_*`, `stg_rejected_rows`, `ping_quality`, `vehicle_day`); `macros/generate_schema_name.sql` makes layer names absolute, and deleting it moves every model silently; `tests/` holds one grain assertion per model plus the geometry, reconciliation and dedup-unit assertions. `gold/` and `marts/` are still empty |
 | `dags/` | Airflow DAGs (phase 4) |
 
 Bronze tables are owned by the Python loader, not dbt — declared in

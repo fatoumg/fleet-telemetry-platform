@@ -2,10 +2,10 @@
 -- asserted it, and the ticket that produced this file exists mostly because of that.
 --
 -- WHAT THIS CATCHES AND WHAT IT DOES NOT. It catches duplicates in the output. It does NOT prove
--- the deduplication rule is correct. Bronze currently holds no duplicate ping_ids at all --
--- 173,062 rows, 173,062 distinct ids -- so DISTINCT ON discards nothing, and this test passes
--- just as happily under a REVERSED ORDER BY that would silently prefer a later re-snapshot over
--- the original streamed create. One row per ping_id is true either way.
+-- the deduplication rule is correct, and that gap did not close when real duplicates appeared.
+-- Bronze now holds 20 duplicate ping_ids -- 190,504 usable rows, 190,484 distinct -- and this test
+-- passes just as happily under a REVERSED ORDER BY that would keep the redelivered copy instead of
+-- the original. One row per ping_id is true either way; that is the whole point. One row per ping_id is true either way.
 --
 -- dbt/models/staging/_unit_tests.yml is what distinguishes them, by supplying the duplicate
 -- reality has not. Both tests are needed and neither substitutes for the other:

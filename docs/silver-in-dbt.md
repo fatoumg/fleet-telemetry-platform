@@ -17,29 +17,41 @@ bug in the ported SQL was found by reading the data it rejected.
 
 ## 1. What was built
 
-Seven models in `dbt/models/staging/`, materialised as **views** in `silver`:
+**All nine scripts** are ported, into `dbt/models/staging/`, materialised as **views** in `silver`.
+Nothing in this layer is hand-written-only; `gold` and `marts` exist and stay empty until their own
+tickets.
 
 ```text
-bronze.raw_ping_events ──> stg_pings ──────────┐
-bronze.raw_job_events ───> stg_job_events ─────┤
-                                               ├──> stg_rejected_rows
-bronze.raw_cdc_entities ─┬> stg_vehicles ──────┘
-                         ├> stg_depots
-                         ├> stg_drivers
-                         └> stg_jobs
+bronze.raw_ping_events ──> stg_pings ──────────┬──> ping_quality
+bronze.raw_job_events ───> stg_job_events ──┐  │
+                                            │  ├──> vehicle_day
+bronze.raw_cdc_entities ─┬> stg_vehicles ───┼──┤
+                         ├> stg_depots ─────┼──┘
+                         ├> stg_drivers     │
+                         └> stg_jobs        │
+                                            └──> stg_rejected_rows
+                             (stg_pings also feeds stg_rejected_rows)
 ```
 
-`ping_quality` and `vehicle_day` are **not** ported. The design spec's layer table
-([§9](superpowers/specs/2026-08-07-telemetry-platform-design.md)) defines Silver as *"deduplication
-on `ping_id`, typing, unit normalisation, geometry construction"*; those two are percentile
-aggregates and a three-way join, which is Gold's work. They stay hand-written in `silver_manual`
-until that ticket.
+`ping_quality` and `vehicle_day` land in `silver` alongside the models they summarise, and that is
+worth recording as a decision rather than presenting as the obvious reading. The design spec's layer
+table ([§9](superpowers/specs/2026-08-07-telemetry-platform-design.md)) defines Silver as
+*"deduplication on `ping_id`, typing, unit normalisation, geometry construction"* and gives Gold
+*every* judgement call — and choosing p50/p99 as the lateness summary, bucketing by `device_ts`
+rather than `server_ts`, and inner-joining the vehicle dimension are all choices. The tension is
+deliberate: the whole layer being in one place and diffable against `silver_manual` beats a clean
+layer boundary today, and it resolves when the dimensional model lands and these two become inputs
+to `mart_pipeline_health` and `mart_vehicle_utilisation` rather than the end of the line.
+
+They carry no `stg_` prefix in either schema, because they are aggregates over the `stg_` models
+rather than stagings of a source — and keeping the hand-written names keeps their diff a one-liner
+too.
 
 A clean build:
 
 ```text
-Found 7 models, 65 data tests, 4 sources, 478 macros, 1 unit test
-Done. PASS=73 WARN=0 ERROR=0 SKIP=0 NO-OP=0 REUSED=0 TOTAL=73
+Found 9 models, 67 data tests, 4 sources, 478 macros, 1 unit test
+Done. PASS=77 WARN=0 ERROR=0 SKIP=0 NO-OP=0 REUSED=0 TOTAL=77
 ```
 
 ### It matches the layer it replaces, exactly
@@ -48,13 +60,26 @@ Both `EXCEPT` directions, per `tests/test_dbt_silver.py`:
 
 | Model | `silver_manual` | `silver` | only in manual | only in dbt |
 | --- | --- | --- | --- | --- |
-| `stg_pings` | 173,046 | 173,046 | 0 | 0 |
+| `stg_pings` | 190,484 | 190,484 | 0 | 0 |
 | `stg_vehicles` | 40 | 40 | 0 | 0 |
 | `stg_depots` | 8 | 8 | 0 | 0 |
 | `stg_drivers` | 40 | 40 | 0 | 0 |
-| `stg_jobs` | 151 | 151 | 0 | 0 |
-| `stg_job_events` | 579 | 579 | 0 | 0 |
-| `stg_rejected_rows` | 36 | 36 | 0 | 0 |
+| `stg_jobs` | 290 | 290 | 0 | 0 |
+| `stg_job_events` | 1,128 | 1,128 | 0 | 0 |
+| `stg_rejected_rows` | 86 | 86 | 0 | 0 |
+| `ping_quality` | 50 | 50 | 0 | 0 |
+| `vehicle_day` | 50 | 50 | 0 | 0 |
+
+The two aggregates also cross-check each other, which is worth more than either diff alone: both
+declare the grain `(vehicle_id, event_date)`, both derive from `stg_pings`, and both account for
+**all 190,484** of its rows. So `vehicle_day`'s inner join on `stg_vehicles` currently drops
+**nothing** — the documented wrongness in §6 is latent in this volume, not active. That is a
+measurement, not a reprieve: it drops rows the moment a vehicle with pings is deleted, and the
+phase-2 diff proved those deletes happen.
+
+Row counts grew during the work — Bronze went from 173k to 205k ping rows as the stack ran — so every
+number in this document comes from one consistent snapshot taken after the final rebuild, not from
+whenever each section was written.
 
 ### The diff is harder than it looks, and the first version of it was wrong
 
@@ -148,9 +173,35 @@ Now asserted from the database by `test_silver_is_not_silver_silver`.
 ## 3. The deduplication rule is finally decidable
 
 [§2](silver-by-hand.md#2-the-deduplication-removes-nothing-and-no-query-can-tell-you-whether-it-is-right)
-measured that `DISTINCT ON (ping_id)` discards **zero** rows, so the model's output is identical
-whether the rule is right, reversed, or absent. Reading the table cannot distinguish them. Reading
-the query cannot either.
+measured that `DISTINCT ON (ping_id)` discarded **zero** rows, so the model's output was identical
+whether the rule was right, reversed, or absent. Reading the table could not distinguish them.
+Reading the query could not either.
+
+### And then, during this work, real duplicates arrived
+
+Measured: **190,504** usable Bronze rows, **190,484** distinct `ping_id`s. The rule removed **20**.
+
+```text
+ping_id                                copies  observations
+017bd8af-0265-46a0-b08c-a2e6a1039af2        2  c@197396  c@197416
+12d84b39-f677-4af7-b5d6-6f5d90b976e1        2  c@197401  c@197421
+140252c6-49e0-4a10-8597-7fedf898b7fb        2  c@197398  c@197418
+```
+
+**Both copies carry `op='c'`,** and every pair is exactly 20 offsets apart. That is not the case the
+model's own header anticipated — a create plus a later snapshot re-read. It is a **producer-side
+redelivery of a single batch of 20 messages**, which Bronze's unique index on
+`(_kafka_partition, _kafka_offset)` cannot absorb, because the copies landed at *different* offsets.
+The at-least-once delivery this pipeline was designed around finally happened.
+
+It also settles a question the hand-written comment left open. `10_stg_pings.sql` argued that
+*"'Prefer `op='c'`' and 'lowest offset' pick the same row — today"*. In the case that actually
+occurred, **"prefer `op='c'`" cannot choose at all** — both copies are creates. Lowest-offset is the
+only rule that resolves it, which is a stronger argument for the chosen rule than the original one.
+
+**This does not retire the unit test — it vindicates writing it early.** A grain assertion still
+cannot settle the rule, because one row per `ping_id` is true under either ordering. And an assertion
+added *after* the divergence cannot tell you which side of it was right.
 
 A grain assertion **does not close that gap**, and this is the part worth understanding. It proves
 the output holds one row per `ping_id` — which is true under both rules.
@@ -186,39 +237,75 @@ same argument, not bought by this ticket. Flagged in each model.
 
 ## 4. What the grain assertions actually buy — and what they don't
 
-One singular test per model, seven in total, all at `+severity: error`. Being honest about them:
+One singular test per model, nine in total, all at `+severity: error`. Being honest about them:
 
-**Six of the seven cannot fail on a correct model.** `stg_pings`, `stg_vehicles`, `stg_depots`,
-`stg_drivers`, `stg_jobs` and `stg_job_events` are all `SELECT DISTINCT ON (key)`, and Postgres
-guarantees one row per `DISTINCT ON` key. Those assertions are **regression guards on the declared
-key** — they fire if someone changes the `DISTINCT ON` expression or adds a join — not live hazard
+**Seven of the nine cannot fail on a correct model.** The six `stg_*` models are `SELECT DISTINCT ON
+(key)`, and `ping_quality` is a `GROUP BY` over one relation — Postgres guarantees the grain in both
+shapes. Those assertions are **regression guards on the declared key**: they fire if someone changes
+the `DISTINCT ON` expression, adds a column to the `GROUP BY`, or joins something in. Not live hazard
 detection.
 
-**`stg_rejected_rows` is the exception**, and it is the one that earns its keep. Three `UNION ALL`
-branches plus a `VALUES` join, so a duplicate is genuinely reachable: an overlapping predicate
-between two branches, or a `source_table` appearing twice in the join list. Either would make the
-reconciliation tests **fail in the direction that looks correct** — the sum would balance while rows
-were double-counted as rejected.
+Two earn their keep, and they are the two that touch more than one relation:
 
-**The model where fan-out is a live hazard is not in this layer.** `50_vehicle_day.sql:96-101` joins
-three tables, its own header says *"No test here asserts the row count, the grain, or that the join
-did not drop anything"*, and it remains hand-written and untested. Add one row to `stg_vehicles` for
-a `vehicle_id` and every distance, speed and ping count in that table doubles with no error. That
-assertion is the Gold ticket's, and it is the most valuable one in the project.
+**`vehicle_day` is the one this ticket was really about.** It joins three relations. Add a second row
+to `stg_vehicles` for one `vehicle_id` and every ping count, speed and distance in that table doubles
+— no error, no warning, and every number a human would sanity-check moves *together* and therefore
+still looks plausible. Its hand-written header said the problem out loud: *"No test here asserts the
+row count, the grain, or that the join did not drop anything. Writing one by hand would mean writing
+a query, running it, and reading the answer myself, every time, for every model."* That labour is now
+`assert_vehicle_day_unique_on_vehicle_and_date.sql`, on every build.
 
-So: the uniform assertion is the right shape — it makes the declared grain a checked claim rather
-than a comment — but seven green checks here should not be read as seven caught bugs.
+**`stg_rejected_rows` is the other.** Three `UNION ALL` branches plus a `VALUES` join, so a duplicate
+is reachable: an overlapping predicate between two branches, or a `source_table` appearing twice in
+the join list. Either would make the reconciliation tests **fail in the direction that looks
+correct** — the sum would balance while rows were double-counted as rejected. So its grain assertion
+protects those tests, not just itself.
+
+**What a grain assertion still cannot do, and `vehicle_day` is the clearest case.** It catches rows
+*added* by a join. It does not catch rows *dropped* by one, because dropping preserves uniqueness
+perfectly. The inner join on `stg_vehicles` silently discards a deleted vehicle's entire day, and no
+green check anywhere in this layer objects — only a reconciliation against `stg_pings` would, and
+that comparison exists in this document (§1) rather than as a test.
+
+So: the uniform assertion is the right shape — it makes every declared grain a checked claim rather
+than a comment — but nine green checks are not nine caught bugs.
 
 ### Reconciliation, which does do arithmetic
 
-| Stream | Bronze | Silver | Rejects | Balances |
-| --- | --- | --- | --- | --- |
-| `raw_ping_events` | 173,062 | 173,046 | 16 | ✅ exactly |
-| `raw_job_events` | 599 | 579 | 20 | ✅ exactly |
+    bronze = silver + rejects + duplicates_removed
 
-Bounded on `max(bronze_offset)`, and the bounds were confirmed non-null (173,061 and 598) — a null
-bound would make the comparison null and the test pass vacuously. **This volume is a better test bed
-than the clean one §1 was written against, where rejects were 0** and the arithmetic held trivially.
+| Stream | Bronze | Silver | Rejects | Duplicates | Balances |
+| --- | --- | --- | --- | --- | --- |
+| `raw_ping_events` | 190,520 | 190,484 | 16 | 20 | ✅ exactly |
+| `raw_job_events` | 1,188 | 1,128 | 60 | 0 | ✅ exactly |
+
+Every term is bounded on `max(bronze_offset)`, and the bounds were confirmed non-null — a null bound
+would make every comparison null and the test pass vacuously.
+
+**Bounding the rejects, not just Bronze, turned out to matter and is now demonstrated.**
+`stg_rejected_rows` holds **70** `raw_job_events` rejects in total but only **60** at or below the
+bound. Counting all of them against a bounded Bronze gives 1,128 + 70 = 1,198 ≠ 1,188 — the sum
+breaks on correct data, because rejects that arrived after the window are compared against a Bronze
+count that excludes them.
+
+**The duplicate term was missing, and that was a real bug in my own test.** The first version
+asserted `bronze = silver + rejects`, which held for exactly as long as deduplication did no work.
+The moment 20 duplicates arrived it failed on a correctly-functioning pipeline, short by exactly 20 —
+and the tempting repair is to loosen it. A reconciliation that breaks the first time deduplication
+does its job is worse than none.
+
+The same defect was sitting in the hand-written `tests/test_transform.py`, unnoticed for the same
+reason and now fixed alongside. Both had been green since the day they were written, which is worth
+noticing: **a reconciliation with a missing term is indistinguishable from a correct one until the
+term becomes non-zero.**
+
+The duplicate count is computed **from Bronze, not from the model**, or the assertion would be
+circular: the reject predicate is the exact complement of the `usable` filter, so
+`bronze − rejects ≡ usable`, and deriving duplicates that way would assert nothing.
+
+These tests are also the **drift detector** for the reject predicate, which is written twice — once
+as each model's `usable` filter, once in `stg_rejected_rows` — with no abstraction preventing them
+disagreeing. A macro would have prevented it; asserting the property instead is the deliberate trade.
 
 These two tests are also the **drift detector**. The reject predicate is written twice — once as each
 model's `usable` filter, once in `stg_rejected_rows` — and no abstraction prevents them disagreeing.
@@ -236,7 +323,8 @@ and the arithmetic closes again.
 
 ## 5. A live bug in the SQL, found by reading what it rejected
 
-`silver_manual.rejected_rows` held **36 rows**, where [§1](silver-by-hand.md) recorded 0. Looking at
+`silver_manual.rejected_rows` held rows at all — **86** in the final snapshot — where
+[§1](silver-by-hand.md) recorded 0. Looking at
 one:
 
 ```text
@@ -261,7 +349,7 @@ balances. Only the human-readable reason is wrong. The correct predicate is
 `jsonb_typeof(payload -> 'after') = 'null'`.
 
 Ported **verbatim on purpose**, so the diff stays a comparison of logic rather than of two different
-filters. Fixing it will move 36 rows in that diff, which is a decision rather than a cleanup.
+filters. Fixing it will move every reject row in that diff, which is a decision rather than a cleanup.
 
 ### 5b. The `u`-or-`d` prediction came true
 
@@ -276,8 +364,8 @@ Their before-images confirm the documented fabricated-defaults pathology **exact
 real field in it. A row that never existed, described plausibly.
 
 Post-exclusion, `bronze_op` in Silver is only what the contract allows — `stg_pings`: `r` 172,800 /
-`c` 246; `stg_job_events`: `r` 535 / `c` 44 — which is what makes `accepted_values` at `error`
-severity safe on the models while it would fail against the sources.
+`c` 17,684, and nothing else — which is what makes `accepted_values` at `error` severity safe on the
+models while it would fail against the sources. The deletes reach Bronze and stop there.
 
 ---
 
@@ -318,15 +406,19 @@ against.
 
 | | |
 | --- | --- |
-| Models, data tests, unit tests | 7 / 65 / 1 — `PASS=73 ERROR=0` |
+| Models, data tests, unit tests | 9 / 67 / 1 — `PASS=77 ERROR=0` |
 | Schema the first model resolved to, before the macro | **`silver_silver`**, with a green build |
 | Reversed dedup rule: unit test vs grain assertion | **FAIL** vs **PASS** |
-| `EXCEPT` diff, all seven pairs, both directions | **0** |
-| Ping reconciliation | 173,062 = 173,046 + 16, exactly |
-| Job-event reconciliation | 599 = 579 + 20, exactly |
-| Rejected rows, and how many are mislabelled | 36, and **all 36** |
-| Grain assertions that can fail on a correct model | **1 of 7** (`stg_rejected_rows`) |
-| Deletes on append-only streams, as predicted | 16 pings + 20 job_events |
+| `EXCEPT` diff, all nine pairs, both directions | **0** |
+| Ping reconciliation | 190,520 = 190,484 + 16 rejects + 20 duplicates, exactly |
+| Job-event reconciliation | 599 = 579 + 20 rejects + 0 duplicates, exactly |
+| Duplicate `ping_id`s the rule removed | **20**, both copies `op='c'`, pairs 20 offsets apart |
+| Reconciliation terms that were missing until a duplicate appeared | **1**, in two separate tests |
+| Rejected rows, and how many are mislabelled | 86, and **all 86** |
+| Grain assertions that can fail on a correct model | **2 of 9** (`vehicle_day`, `stg_rejected_rows`) |
+| Pings accounted for by both aggregates | 173,046 = 173,046 — the inner join drops nothing *today* |
+| Fleet total distance, `vehicle_day` | 12,952.5 km |
+| Deletes on append-only streams, as predicted | 16 pings + 70 job_events, every one `op='d'` |
 
 ---
 
@@ -353,7 +445,21 @@ Answer from memory. If you cannot, this phase is not finished, however green the
    term, which makes the residual "everything I could not account for". The check closes properly
    once Type 2 history retains every version.
 
-4. **All 36 rejected rows carry a wrong reason. Why is the reject *set* still correct?**
+4. **Real duplicate `ping_id`s finally appeared. Why did that break two reconciliation tests that
+   had always been green — and why is that a bug in the tests rather than the pipeline?**
+   Both asserted `bronze = silver + rejects`, which omits the rows deduplication removes. That term
+   was zero for as long as the rule did no work, so the arithmetic balanced and the omission was
+   invisible. The moment 20 duplicates arrived the sum was short by exactly 20, on a pipeline
+   behaving correctly. A reconciliation with a missing term is indistinguishable from a correct one
+   until the term becomes non-zero.
+
+5. **Both copies of every duplicate carried `op='c'`. Why does that matter for the tie-break?**
+   Because the model's header offered "prefer `op='c'`" as an equivalent rule, and against two
+   creates it cannot choose at all. Lowest offset is the only rule that resolves the case that
+   actually occurred — a producer-side redelivery, not the create-plus-re-snapshot the comment
+   anticipated.
+
+6. **All rejected rows carry a wrong reason. Why is the reject *set* still correct?**
    Because the exclusion is done by the key check, not the after-image check. `payload -> 'after' IS
    NULL` is false for a Debezium delete — `"after": null` is a JSON null, and `->` returns jsonb
    null, not SQL NULL — but `#>> '{after,ping_id}'` through that JSON null does yield SQL NULL. So
@@ -364,8 +470,13 @@ Answer from memory. If you cannot, this phase is not finished, however green the
 ## Next
 
 - The ideas: `docs/learn/03-transformation.md` (issue #16, not written yet)
-- `ping_quality` and `vehicle_day` into Gold, where `vehicle_day` finally gets the grain assertion
-  that can actually fail
+- `vehicle_day`'s inner join on `stg_vehicles` → `LEFT JOIN` plus an "unknown" dimension member. It
+  is the obvious next change and was deliberately not made here: altering it would have changed the
+  numbers in the same commit that moved the file, and a port whose output differs from its source
+  cannot be verified against it
+- Gold: SCD Type 2 from the change stream, and clock-skew correction. That is where the
+  `REPLICA IDENTITY FULL` before-image caveat becomes load-bearing, and where a macro for the four
+  entity models finally earns its place
 - Incremental materialisation and the lateness policy: the `+severity: error` tests here are what
   make restatement safe to attempt
 - Defects found along the way: [`known-issues.md`](known-issues.md)

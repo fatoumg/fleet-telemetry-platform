@@ -29,8 +29,9 @@ models:
       One row per ping_id, typed, with geometry constructed from the raw lat/lon doubles.
       Deduplicated exactly on ping_id -- the client-generated idempotency key -- preferring the
       earliest Bronze observation. That rule is proved by the unit test in _unit_tests.yml, not by
-      the grain assertion: bronze holds no duplicate ping_ids, so the grain assertion passes even
-      under a reversed rule.
+      the grain assertion. Bronze does now hold 20 duplicate ping_ids -- a producer-side redelivery,
+      both copies op='c' -- so the rule finally does visible work, but the grain assertion still
+      passes under a reversed rule, because one row per ping_id is true either way.
     columns:
       - name: ping_id
         description: >
@@ -341,3 +342,103 @@ models:
         description: The Bronze envelope verbatim, so a reject can always be traced to the message
           behind it.
         tests: [not_null]
+
+  # ------------------------------------------------------------------------------------
+  - name: ping_quality
+    description: >
+      One row per vehicle per day: gaps, repeats and the lateness distribution. A diagnostic -- a
+      human reads this. Bucketed by device_ts, the UNTRUSTWORTHY timestamp, because the question it
+      answers is "what did the device claim about its own day"; bucketing by server_ts would answer
+      "what did we receive when", which is a different table and the one the lateness policy needs.
+    columns:
+      - name: vehicle_id
+        description: Half the declared grain.
+        tests: [not_null]
+      - name: event_date
+        description: The other half, from device_ts at UTC.
+        tests: [not_null]
+      - name: pings
+        tests: [not_null]
+      - name: gaps
+        description: >
+          Rows where sequence_no jumped by more than 1. A gap PROVES data was lost, where an
+          unchanging position with NO gap proves the vehicle stopped -- sequence_no is the only
+          thing that separates those two, which makes it the most load-bearing column upstream.
+        tests: [not_null]
+      - name: rows_missing
+        description: >
+          Rows lost, not gap events. One gap of 50 is worse than five gaps of 2, and a count of
+          gaps alone cannot tell those apart.
+        tests: [not_null]
+      - name: repeats
+        description: >
+          sequence_no did not advance. The app has no unique constraint on
+          (vehicle_id, sequence_no), deliberately, so the warehouse is where this is detected.
+          Measured 0 -- after a real bug that produced 7,201 of them.
+        tests: [not_null]
+      - name: lateness_p99
+        description: >
+          The floor for any watermark the lateness work chooses. A bound below this would
+          quarantine correct data before any pathology exists.
+      - name: negative_lateness
+        description: >
+          Rows where server_ts landed BEFORE device_ts -- impossible for a clock merely wrong in
+          the usual direction. Not tested, deliberately: the honest response to one is to
+          investigate the host clock, and the claim that server_ts is trustworthy needs this
+          number visible rather than enforced away. It has paid out twice.
+        tests: [not_null]
+
+  # ------------------------------------------------------------------------------------
+  - name: vehicle_day
+    description: >
+      One row per vehicle per day: ping counts, speed, distinct positions and distance travelled.
+      THE ONLY MODEL IN THIS LAYER WHERE THE GRAIN ASSERTION CAN FAIL ON A LIVE HAZARD -- it joins
+      three relations, so a duplicate in stg_vehicles doubles every number here at once, with no
+      error and no warning.
+
+      Its inner join on stg_vehicles is a documented wrongness: a deleted vehicle takes its whole
+      day with it, even though those pings really happened and sit in stg_pings. Losing rows
+      preserves uniqueness, so no grain assertion catches it -- see the model header.
+    columns:
+      - name: vehicle_id
+        description: Half the declared grain.
+        tests: [not_null]
+      - name: event_date
+        description: The other half, from device_ts at UTC -- the only ordering that describes the
+          vehicle's own path.
+        tests: [not_null]
+      - name: plate
+        description: >
+          From stg_vehicles via the inner join. No not_null test even though plate is NOT NULL
+          upstream: the assertion would be true for a reason that has nothing to do with this
+          model, and would pass just as happily after the join dropped every row it should have
+          kept.
+      - name: home_depot_name
+        description: >
+          Left-joined, because a depot that has not been captured yet should not delete a
+          vehicle's day. Legitimately null, so no test.
+      - name: pings
+        description: >
+          Should sum to stg_pings' row count across all rows. Measured 173,046 = 173,046, which
+          means the inner join currently drops nothing -- latent, not fixed. Not asserted here,
+          because it is a claim about two models rather than a property of one.
+        tests: [not_null]
+      - name: distinct_positions
+        description: >
+          Separates a parked vehicle from a moving one without needing a speed threshold. A
+          vehicle reporting 700 pings from 3 positions did not drive.
+        tests: [not_null]
+      - name: avg_speed_kmh
+        description: >
+          Nullable: avg() over all-null speeds is null. Read it beside speed_missing, never alone.
+      - name: speed_missing
+        description: >
+          Null speed readings, counted rather than ignored, because avg() skips them silently and
+          an average over 3 of 700 readings looks exactly like an average over 700.
+        tests: [not_null]
+      - name: distance_metres
+        description: >
+          Straight-line legs summed, in METRES on a spheroid -- the geometry is cast to geography
+          first, because ST_Distance on geometry in SRID 4326 returns degrees, which is a number
+          that looks like a distance and is not one. Nullable: a vehicle-day with one ping has no
+          leg. Fleet total measured 12,952.5 km.
