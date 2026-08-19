@@ -63,6 +63,18 @@ schema is `silver_manual`, never `silver`: dbt owns `silver` and would drop same
 first run, destroying the artifact and the dbt-vs-hand diff with it. `tests/test_transform.py` pins
 both the schema name and the script order.
 
+**Silver now exists twice, and both survive on purpose.** `sql/silver/` builds `silver_manual` and
+is the kept phase-3-step-1 artifact — the same treatment `poller.py` got in phase 2. The seven dbt
+models in `dbt/models/staging/` build `silver` and are what everything downstream reads. Model names
+are identical across the two schemas so the diff is a one-liner; `rejected_rows` is the one
+exception, since staging requires the `stg_` prefix. `tests/test_dbt_silver.py` asserts all seven
+pairs match in both directions, and the findings are in `docs/silver-in-dbt.md`.
+
+Only the six `stg_*` scripts plus the reject bin were ported. `40_ping_quality.sql` and
+`50_vehicle_day.sql` stay hand-written: percentile aggregates and a three-way join are Gold's work
+by the design spec's layer table, and `vehicle_day` is where the grain assertion finally has a
+fan-out to catch.
+
 ### Tests
 
 ```bash
@@ -165,7 +177,7 @@ is the specific anti-pattern this project exists to replace.
 | `src/fleet_telemetry/transform/` | `run.py` — executes `sql/silver/*.sql` in filename order. No business logic; every rule is in the SQL |
 | `sql/silver/` | Silver as hand-written SQL (phase 3 step 1), targeting `silver_manual`. Built to be superseded by `dbt/`, and kept afterwards like `poller.py` was |
 | `docker/debezium/` | Connector config. Credentials are `${...}` placeholders filled by `connector.py` from `config.py` |
-| `dbt/` | Silver, Gold, marts — all business logic |
+| `dbt/` | Silver, Gold, marts — all business logic. `models/staging/` → `silver` (seven models, views); `macros/generate_schema_name.sql` makes layer names absolute; `tests/` holds one grain assertion per model plus the geometry and reconciliation assertions. `gold/` and `marts/` are still empty |
 | `dags/` | Airflow DAGs (phase 4) |
 
 Bronze tables are owned by the Python loader, not dbt — declared in
@@ -230,6 +242,22 @@ locally and dangerous anywhere else, so `describe()` prints the distinction. Sec
 printed — passwords render as presence plus length, DSNs redacted, and two tests assert it.
 Loaders take optional `env`/`root` arguments so tests stay hermetic instead of mutating
 `os.environ`.
+
+**`dbt/macros/generate_schema_name.sql` is load-bearing, and deleting it fails silently.** dbt's
+built-in macro *concatenates* `target.schema` with `+schema`, so with `schema: silver` in
+`profiles.yml` and `+schema: silver` in `dbt_project.yml`, models resolve to **`silver_silver`** —
+measured. `dbt build` reports success either way: creating a view in the wrong schema is not an
+error, the models are correct, their tests pass against them, and `silver` is simply empty. The
+override makes layer names absolute. `tests/test_dbt_silver.py::test_silver_is_not_silver_silver`
+asserts it from the database, because nothing about a green build reports the destination.
+
+**A grain assertion does not prove a deduplication rule.** It proves the output holds one row per
+key, which is true whether the rule keeps the earliest or the latest observation. Bronze holds no
+duplicate `ping_id`s, so `DISTINCT ON` discards nothing and both rules emit identical rows — and
+reversing the `ORDER BY` in `stg_pings` fails the unit test while the grain assertion still passes.
+Rules that real data cannot exercise need a fixture that contains the case, which is what
+`dbt/models/staging/_unit_tests.yml` is for. Note dbt materialises a unit test as a relation, so its
+name is bound by Postgres's 63-character identifier limit.
 
 **dbt vars encode policy.** `incremental_lookback_days` MUST exceed `lateness_bound_hours` — a
 shorter lookback silently loses events that arrived within the accepted bound while the pipeline
