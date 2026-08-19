@@ -14,8 +14,13 @@ clean-targets: ["target", "dbt_packages"]
 
 models:
   fleet_telemetry:
-    # One schema per medallion layer, matching docker/warehouse/init.sql. Layer names are
-    # absolute (+schema with a custom generate_schema_name macro would prefix them).
+    # One schema per medallion layer, matching docker/warehouse/init.sql.
+    #
+    # These names are absolute ONLY because macros/generate_schema_name.sql overrides dbt's
+    # built-in, which CONCATENATES target.schema with +schema. Under `schema: silver` in
+    # profiles.yml, the built-in resolved this to `silver_silver` -- measured, before that macro
+    # existed. `dbt build` reports success either way and the silver schema simply stays empty,
+    # so delete that macro and every model in this file moves without an error. See its header.
     staging:
       +schema: silver
       # Silver is cheap to rebuild and its logic changes rarely -- views keep it honest,
