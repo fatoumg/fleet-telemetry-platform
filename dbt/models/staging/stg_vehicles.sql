@@ -17,13 +17,11 @@
 -- dependency between them, so dbt runs them across its four threads (dbt/profiles.yml:30) where
 -- the hand-written runner executed them strictly in filename order.
 --
--- NO MACRO FOR THE SHARED SCAFFOLDING, DELIBERATELY. The usable/latest CTEs below are repeated
--- almost verbatim in three sibling files, and extracting them into a dbt macro is the obvious
--- move. Not taken. docs/silver-by-hand.md sections 7 and 1-6 record what the hand-written layer
--- actually cost -- no dependency graph, no tests, no lineage, no state -- and duplication is not
--- on that list. It has not bitten. A tool introduced before its problem is a tool you cannot
--- explain, and that applies to Jinja as much as to Airflow. The macro's moment is the Gold
--- ticket, where Type 2 history triples this scaffolding in all four models at once.
+-- THE SHARED SCAFFOLDING NOW LIVES IN A MACRO: dbt/macros/cdc.sql. This paragraph used to argue
+-- against that extraction, on the grounds that the duplication across the four sibling files had
+-- not yet bitten. Issue #13 is the bite -- stg_vehicle_versions and stg_driver_versions need the
+-- `usable` CTE without the `latest` CTE, so the two had to stop being one block that every model
+-- copied whole. See cdc.sql for the reasoning that moved with them.
 --
 -- CURRENT STATE IS THE MODEST CLAIM HERE. Type 2 history -- the full validity range per version,
 -- which is what a change stream with before-images actually enables -- is the Gold ticket's.
@@ -32,44 +30,11 @@
 -- structurally cannot (docs/learn/02-ingestion.md, the diff).
 
 WITH usable AS (
-    SELECT *,
-           -- A delete carries no after-image, so the key must come from the before-image.
-           -- COALESCE in this order because after wins whenever it exists.
-           --
-           -- CAUTION on the before-image generally: the four mutable tables are REPLICA
-           -- IDENTITY FULL, and on any volume created before 2026-08-12 those ALTERs never ran,
-           -- so before-images hold Debezium's type DEFAULTS rather than the old row -- plate '',
-           -- capacity 0, created_at 1970-01-01 (docs/known-issues.md, section 1). The primary
-           -- key is the one field that is real in that case, which is all this COALESCE needs.
-           -- Anything in the Gold ticket that reads the rest of the before-image inherits the
-           -- problem -- and it is live: pings, which is deliberately NOT replica identity full,
-           -- was measured emitting deletes whose before-image reads latitude 0.0, longitude 0.0,
-           -- device_ts 1970-01-01 (see stg_rejected_rows.sql).
-           coalesce(
-               payload #>> '{after,vehicle_id}',
-               payload #>> '{before,vehicle_id}'
-           ) AS entity_key
-      FROM {{ source('bronze', 'raw_cdc_entities') }}
-     WHERE source_table = 'vehicles'
-       AND parse_error IS NULL
+    {{ cdc_usable('vehicles', 'vehicle_id') }}
 ),
 
 latest AS (
-    -- Latest wins here, the opposite of stg_pings.sql -- and for the opposite reason. A ping is
-    -- immutable, so the earliest observation of it is the truest one. A vehicle is mutable, so
-    -- only the newest event describes it.
-    --
-    -- source_ts_ms::bigint, NOT source_ts_ms. It is text in Bronze, and text ordering puts
-    -- '9' after '10'. Sorting a 13-digit epoch as text is wrong roughly whenever the digit
-    -- count changes, which for millisecond epochs is rare enough to survive every test you
-    -- would think to write and then be wrong in production.
-    SELECT DISTINCT ON (entity_key) *
-      FROM usable
-     WHERE entity_key IS NOT NULL
-     ORDER BY entity_key,
-              source_ts_ms::bigint DESC,
-              _kafka_partition DESC,
-              _kafka_offset DESC
+    {{ cdc_latest() }}
 )
 
 SELECT

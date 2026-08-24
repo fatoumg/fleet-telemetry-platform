@@ -6,8 +6,8 @@
 -- Feeds:  nothing yet. Modelled because the entity exists, not because a consumer asked.
 --
 -- Ported from sql/silver/22_stg_drivers.sql. Same shape as stg_vehicles.sql; the reasoning about
--- latest-wins, the source_ts_ms::bigint cast, the before-image caveat and why there is no macro
--- all lives there.
+-- latest-wins, the source_ts_ms::bigint cast and the before-image caveat now lives in the shared
+-- scaffolding macro, dbt/macros/cdc.sql, which both this model and stg_vehicles.sql call.
 --
 -- `phone` is nullable in the OLTP and measured 0% null, so nothing in phase 1 exercises the null
 -- path. Kept as a plain cast-free text column rather than coalesced to '': an absent phone
@@ -21,24 +21,11 @@
 -- downstream depends on version ordering.
 
 WITH usable AS (
-    SELECT *,
-           coalesce(
-               payload #>> '{after,driver_id}',
-               payload #>> '{before,driver_id}'
-           ) AS entity_key
-      FROM {{ source('bronze', 'raw_cdc_entities') }}
-     WHERE source_table = 'drivers'
-       AND parse_error IS NULL
+    {{ cdc_usable('drivers', 'driver_id') }}
 ),
 
 latest AS (
-    SELECT DISTINCT ON (entity_key) *
-      FROM usable
-     WHERE entity_key IS NOT NULL
-     ORDER BY entity_key,
-              source_ts_ms::bigint DESC,
-              _kafka_partition DESC,
-              _kafka_offset DESC
+    {{ cdc_latest() }}
 )
 
 SELECT

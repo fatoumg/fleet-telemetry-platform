@@ -16,7 +16,9 @@
 -- and that check stops compiling.
 --
 -- Same shape as stg_vehicles.sql; the reasoning about latest-wins, the bigint cast on
--- source_ts_ms and the before-image caveat all lives there. Two differences worth noting.
+-- source_ts_ms and the before-image caveat now lives in the shared scaffolding macro,
+-- dbt/macros/cdc.sql, which both this model and stg_vehicles.sql call. Two differences worth
+-- noting.
 --
 -- FIRST: depots carries geometry. Silver constructs it (design spec section 9), so the same
 -- lon-before-lat rule as stg_pings.sql applies -- and here it is checkable by eye, because
@@ -39,21 +41,11 @@
 -- one reject table could not survive the port.
 
 WITH usable AS (
-    SELECT *,
-           coalesce(payload #>> '{after,depot_id}', payload #>> '{before,depot_id}') AS entity_key
-      FROM {{ source('bronze', 'raw_cdc_entities') }}
-     WHERE source_table = 'depots'
-       AND parse_error IS NULL
+    {{ cdc_usable('depots', 'depot_id') }}
 ),
 
 latest AS (
-    SELECT DISTINCT ON (entity_key) *
-      FROM usable
-     WHERE entity_key IS NOT NULL
-     ORDER BY entity_key,
-              source_ts_ms::bigint DESC,
-              _kafka_partition DESC,
-              _kafka_offset DESC
+    {{ cdc_latest() }}
 )
 
 SELECT
