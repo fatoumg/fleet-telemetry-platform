@@ -1,0 +1,148 @@
+version: 2
+
+# Column contracts for Gold -- the first ones in the project. Descriptions, not_null on the
+# declared key and on the interval bookkeeping, accepted_values on the Debezium op code.
+#
+# GRAIN UNIQUENESS IS NOT HERE. It lives in dbt/tests/ as one singular test per model, so every
+# model asserts its grain the same way whether that grain is one column or several -- and these
+# grains are composite, which `unique` cannot express at all without adding dbt_utils.
+# dbt/models/staging/_models.yml rules that package out by name; the reasoning is the same here.
+#
+# NO relationships TESTS, AND THE ABSENCE IS THE SAME DECISION IT WAS IN SILVER -- with one extra
+# reason that is specific to this layer. The obvious edge, dim_vehicle.current_driver_id to
+# dim_driver, would fail on correct data twice over: DELETE /vehicles/{id} and the driver
+# equivalent are hard deletes on purpose (CLAUDE.md), so a live vehicle can reference a driver that
+# has been deleted -- and BEYOND THAT, a Type 2 dimension has no single row per key to point at.
+# The correct join to a versioned dimension is on the key AND the interval containing the fact's
+# event time, which is a fact-table concern rather than a dimension one. At `+severity: error`
+# project-wide (dbt/dbt_project.yml:43-45), adding either would break the build to report
+# something the design already decided.
+#
+# GOLD IS +materialized: table, NOT view (dbt/dbt_project.yml:29-31), and that is a real
+# difference from Silver. A view cannot go stale; a table can, and a table that is not rebuilt
+# silently disagrees with the Silver models feeding it while every query against it still works.
+# What makes it acceptable here is the volume: 121 vehicle change events and 108 driver ones on
+# this volume, ~2,000 entity changes per 30 days, so both models rebuild whole on every run and
+# there is no incremental logic to get wrong. If that stops being true, the answer is an
+# incremental strategy with an explicit lookback -- see dbt_project.yml's
+# incremental_lookback_days, which MUST exceed lateness_bound_hours -- and not a longer interval
+# between full rebuilds.
+#
+# WHY not_null IS ABSENT FROM valid_to AND FROM THE ATTRIBUTE COLUMNS. valid_to is null on exactly
+# the current version of every live entity, and that null is the meaning of "still valid" -- a
+# not_null test there would fail on every correct build. The attribute columns (plate, capacity,
+# full_name, ...) are NOT NULL in the OLTP and are non-null here too, because the delete rows that
+# carry no after-image are filtered out of both models; the constraint is asserted once, on the
+# current-state twins in staging/_models.yml, rather than restated at every layer that happens to
+# preserve it. What IS asserted here is the bookkeeping this layer invents: the key, the interval
+# start, and the three flags, because those are the columns no upstream model can vouch for.
+
+models:
+  # ------------------------------------------------------------------------------------
+  - name: dim_vehicle
+    description: >
+      Type 2 dimension: one row per vehicle_id per validity interval, half-open
+      [valid_from, valid_to). Reconstructs the reassignment history that current state throws away
+      -- docs/source-system-reference.md:259 measured 12 reassignments performed against 8 changed
+      rows, and the missing four are intermediate depots no query could reach.
+
+      Measured on this volume: 103 versions across 44 distinct vehicle_ids, of which 40 are
+      current, 14 are the last version before a hard delete, and 40 begin at the Debezium snapshot
+      rather than at a real change. It reconciles: 44 first versions plus 59 real changes, from 107
+      non-delete events with 4 no-op UPDATEs suppressed.
+    columns:
+      - name: vehicle_id
+        description: >
+          Half the declared grain -- see
+          dbt/tests/assert_dim_vehicle_unique_on_vehicle_and_valid_from.sql. NOT the primary key
+          on its own, which is the single most common way a Type 2 dimension is misread: 44 ids
+          hold 103 rows here, and a join on vehicle_id alone fans a fact out across every version.
+        tests: [not_null]
+      - name: plate
+        description: >
+          Registration plate as of this interval. NOT NULL in the OLTP and non-null here because
+          delete rows are filtered out -- see the file header on why no not_null test.
+      - name: capacity
+        description: Seats as of this interval. Same reasoning as plate.
+      - name: status
+        description: Operational status as of this interval. Same reasoning as plate.
+      - name: current_driver_id
+        description: >
+          Nullable and reassignable in the OLTP (docker/oltp/init.sql:102-103), and genuinely null
+          on 14 of the versions here -- the integration suite's disposable test vehicles are
+          created without a driver. So no not_null test, and no relationships test either: see the
+          file header.
+      - name: home_depot_id
+        description: >
+          THE COLUMN THIS TICKET EXISTS FOR. NOT NULL in the OLTP
+          (docker/oltp/init.sql:105). Its history is what current state destroyed.
+      - name: created_at
+        description: >
+          When the OLTP row was created -- a property of the vehicle, repeated on every version of
+          it, and NOT the start of the first interval. Kept alongside valid_from precisely so the
+          two can be compared: where they differ on a version flagged
+          valid_from_is_observation_start, the difference is everything that happened before CDC
+          started watching.
+      - name: valid_from
+        description: >
+          Inclusive start of this version's validity, from the WAL commit time of the event that
+          created it. The other half of the declared grain.
+        tests: [not_null]
+      - name: valid_to
+        description: >
+          EXCLUSIVE end of this version's validity, equal to the next version's valid_from, or NULL
+          when the version is still open. NO not_null TEST -- null is what "still valid" means; see
+          the file header.
+      - name: is_current
+        description: >
+          True when valid_to is null. Convenience over `valid_to IS NULL`, and worth the column
+          because "current" is what almost every consumer wants and `IS NULL` is what almost every
+          consumer gets wrong. FALSE on the final version of a deleted vehicle -- the vehicle
+          stopped existing, which is not the same as still being current.
+        tests: [not_null]
+      - name: is_deleted
+        description: >
+          True when the event that closed this interval was a Debezium delete. Distinguishes "the
+          vehicle changed" from "the vehicle was removed", which is the difference between an
+          interval that has a successor and one that does not.
+
+          coalesce(next_op = 'd', false), not next_op = 'd' -- a bare comparison is NULL on the
+          current version, and the not_null test below is what stops that regression passing
+          quietly.
+        tests: [not_null]
+      - name: valid_from_is_observation_start
+        description: >
+          True when this version began at the Debezium snapshot (op='r') rather than at an observed
+          change -- 40 of 103 rows. The boundary is FABRICATED on those rows: it records when CDC
+          started watching, not when the vehicle acquired these attributes. Marked rather than
+          hidden, and rather than backdated to created_at, because nothing in Bronze supports the
+          claim that the attributes held from creation onwards.
+        tests: [not_null]
+      - name: source_op
+        description: >
+          The Debezium op of the event that OPENED this interval. c, u or r -- no 'd', because a
+          delete is not a version and those rows are filtered out of the output. A delete is
+          visible here only through is_deleted on the version it closed.
+        tests:
+          - accepted_values:
+              # Nested under `arguments:` because dbt 1.10 deprecated top-level generic-test
+              # arguments. The old form still runs and emits
+              # MissingArgumentsPropertyInGenericTestDeprecation.
+              arguments:
+                values: ['c', 'u', 'r']
+      - name: source_ts_ms
+        description: >
+          valid_from as the raw millisecond epoch. What the version ordering compares on --
+          integers compare exactly -- and what makes the zero-width interval hazard in
+          dbt/tests/assert_dim_vehicle_intervals_are_non_empty.sql a property of the clock rather
+          than of the SQL.
+        tests: [not_null]
+      - name: bronze_partition
+        description: >
+          Provenance -- the broker coordinate of the event that opened this interval, and half of
+          the ordering tie-break when two events share a source_ts_ms.
+        tests: [not_null]
+      - name: bronze_offset
+        description: The other half. Provenance, and the tie-break that makes the version order
+          deterministic rather than merely usually right.
+        tests: [not_null]
