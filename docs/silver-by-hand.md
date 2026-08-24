@@ -364,5 +364,9 @@ Answer from memory. If you cannot, this phase is not finished, however well the 
 ## Next
 
 - The ideas: `docs/learn/03-transformation.md` (issue #16, not written yet)
-- The same logic in dbt, with the tests this layer lacks: issue #12
+- **The same logic in dbt, with the tests this layer lacks: [`silver-in-dbt.md`](silver-in-dbt.md)**
+  (issue #12, done). Three of the four absences in §7 are closed there; **No state** is not. The
+  §2 question this exercise could not answer — whether the deduplication rule is right — is
+  answered by a unit test, and the answer is measured: reversing the rule fails it while the grain
+  assertion still passes.
 - Defects found along the way: [`known-issues.md`](known-issues.md)

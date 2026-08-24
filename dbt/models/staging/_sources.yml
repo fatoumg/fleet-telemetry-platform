@@ -74,6 +74,22 @@ sources:
             description: When Bronze wrote the row.
             tests:
               - not_null
+          - name: payload
+            description: >
+              The whole Debezium envelope. THIS FILE IS NOT AN INVENTORY OF AVAILABLE FIELDS, it
+              is a list of the PROJECTED ones -- everything else is still there, one #>> away.
+              stg_pings reads vehicle_id, latitude, longitude, speed_kmh and heading_deg straight
+              out of `after`, and none of them appear as columns above. A reader who trusts the
+              column list as an inventory will conclude those fields do not exist.
+          - name: parse_error
+            description: >
+              Non-null means the bytes never became JSON, so there is no after-image to read.
+              Such rows go to stg_rejected_rows, never to stg_pings.
+
+              CAREFUL with the companion check: `payload -> 'after' IS NULL` does NOT detect a
+              delete. Debezium emits `"after": null`, so `->` returns jsonb 'null' rather than
+              SQL NULL -- verified FALSE on a real delete at offset 172808. The predicate that
+              works is jsonb_typeof(payload -> 'after') = 'null'.
 
       - name: raw_cdc_entities
         description: >
@@ -87,9 +103,22 @@ sources:
           - name: op
             description: Debezium operation - c=create, u=update, d=delete, r=snapshot read.
           - name: before
-            description: Row image prior to the change; null for creates.
+            description: >
+              Row image prior to the change; null for creates.
+
+              ITS ABSENCE IS NOT EMPTY, IT IS FABRICATED. These four tables are REPLICA IDENTITY
+              FULL so the real old row is logged -- but on any volume created before 2026-08-12
+              those ALTERs never ran, and Debezium fills the gap with TYPE DEFAULTS: plate '',
+              capacity 0, created_at 1970-01-01 (docs/known-issues.md, section 1). The primary key
+              is the one field that is real in that case, which is all stg_rejected_rows needs
+              from it. Anything in the Gold ticket that reads the rest inherits the problem.
           - name: after
             description: Row image after the change; null for deletes.
+          - name: parse_error
+            description: >
+              Non-null means the bytes never became JSON. Such rows go to stg_rejected_rows.
+              Unlike the two append-only streams, the entity models do NOT reject a row for a
+              missing after-image: a delete is expected here and its key comes from `before`.
           - name: source_ts_ms
             description: >
               Commit time from the OLTP write-ahead log, not the time the consumer saw it.

@@ -1,0 +1,444 @@
+version: 2
+
+# Column contracts for Silver. Descriptions, not_null on the declared grain and on the columns the
+# OLTP declares NOT NULL, accepted_values on the Debezium op code.
+#
+# GRAIN UNIQUENESS IS NOT HERE. It lives in dbt/tests/ as one singular test per model, so every
+# model asserts its grain the same way whether that grain is one column or several. Repeating it
+# here as a generic `unique` would give two assertions of one property that pass and fail in
+# lockstep while doubling what has to be kept in step. The composite grains could not use `unique`
+# at all without adding dbt_utils, and adding a package for one test is not worth a packages.yml
+# (docs/superpowers/plans/2026-08-11-phase-2-ingestion.md:2233).
+#
+# NO relationships TESTS ANYWHERE IN THIS FILE, and the absence is a decision. The obvious ones --
+# stg_jobs.vehicle_id to stg_vehicles, stg_vehicles.home_depot_id to stg_depots -- would fail on
+# correct data. DELETE /vehicles/{id} is a hard delete on purpose (CLAUDE.md), and the phase-2 diff
+# proved two vehicle lifecycles really were deleted, so a vehicle can be referenced by a job and
+# absent from the dimension at the same time. That is not a broken pipeline, it is what a hard
+# delete means. Whether a missing dimension member is dropped or marked unknown is a presentation
+# judgement, and judgements are Gold's. At `+severity: error` project-wide, adding them would
+# break the build to report something the design already decided.
+#
+# Everything below is +severity: error via dbt_project.yml:38-40. A failing test blocks the build
+# rather than warning into a log nobody reads.
+
+models:
+  # ------------------------------------------------------------------------------------
+  - name: stg_pings
+    description: >
+      One row per ping_id, typed, with geometry constructed from the raw lat/lon doubles.
+      Deduplicated exactly on ping_id -- the client-generated idempotency key -- preferring the
+      earliest Bronze observation. That rule is proved by the unit test in _unit_tests.yml, not by
+      the grain assertion. Bronze does now hold 20 duplicate ping_ids -- a producer-side redelivery,
+      both copies op='c' -- so the rule finally does visible work, but the grain assertion still
+      passes under a reversed rule, because one row per ping_id is true either way.
+    columns:
+      - name: ping_id
+        description: >
+          The declared grain. Client-generated UUID, cast from Bronze text. A retrying device
+          resends the same ping_id, so deduplication is exact rather than heuristic.
+        tests: [not_null]
+      - name: vehicle_id
+        description: Which vehicle reported. NOT NULL in the OLTP.
+        tests: [not_null]
+      - name: sequence_no
+        description: >
+          Monotonic per device. A gap PROVES data was lost; an unchanging position with no gap
+          proves the vehicle stopped. That is what makes "no data" and "no activity"
+          distinguishable from the data itself rather than inferred.
+
+          No unique test on (vehicle_id, sequence_no), deliberately: the app has no such
+          constraint either (docker/oltp/init.sql:236-238), because a repeat is a signal to
+          measure rather than a violation to reject. A real bug once produced 7,201 of them.
+        tests: [not_null]
+      - name: device_ts
+        description: >
+          When the device recorded the reading, by its own clock. NOT TRUSTWORTHY -- a wrong clock
+          reports a wrong time and no validation can detect it. Skew correction is Gold's.
+        tests: [not_null]
+      - name: server_ts
+        description: >
+          When the application received it. Trustworthy in the sense that we produced it and no
+          client can forge it -- but NOT monotonic. 10 rows were measured carrying a server_ts
+          EARLIER than their own device_ts, because the host clock steps backwards
+          (docs/silver-by-hand.md, section 3). Anything assuming lateness >= 0, or taking a
+          watermark from max(server_ts) without a clamp, has an unhandled case.
+        tests: [not_null]
+      - name: lateness_seconds
+        description: >
+          server_ts - device_ts. OBSERVED, not corrected. Measured baseline p50 34.0s, p99 67.0s
+          -- the floor for any watermark, since a bound below the observed p99 would quarantine
+          correct data before any pathology exists. Can be negative; see server_ts. No test, for
+          that reason: there is no value here that is wrong.
+      - name: latitude
+        description: Raw degrees, WGS84. NOT NULL in the OLTP.
+        tests: [not_null]
+      - name: longitude
+        description: Raw degrees, WGS84. NOT NULL in the OLTP.
+        tests: [not_null]
+      - name: speed_kmh
+        description: >
+          Nullable in the OLTP and measured 0% null. No not_null test: a nullable column that
+          happens to be full today is a promise nobody made.
+      - name: heading_deg
+        description: Nullable in the OLTP, same reasoning as speed_kmh.
+      - name: position
+        description: >
+          GEOMETRY(POINT, 4326), built LONGITUDE-FIRST from the latitude and longitude columns
+          above. The OLTP deliberately has no PostGIS, so construction is Silver's job.
+          Orientation is asserted by tests/assert_stg_pings_geometry_matches_its_coordinates.sql,
+          because swapping the arguments does not error -- it moved fleet total distance by +2.14%
+          with every script reporting ok.
+      - name: bronze_op
+        description: >
+          Debezium operation. Only c (create) and r (snapshot read) reach this model. Measured:
+          r 172,800 and c 246.
+
+          accepted_values at error severity rather than warn, because _sources.yml:50-54 is
+          explicit that a u or a d on this append-only stream "is itself a finding rather than
+          something to handle" -- an impossible op is not a value to tolerate. Deletes DO arrive in
+          Bronze (16 measured) and are excluded upstream into stg_rejected_rows, which is why this
+          holds here and would not hold against the source.
+        tests:
+          - accepted_values:
+              # Nested under `arguments:` because dbt 1.10 deprecated top-level generic-test
+              # arguments. The old form still runs and emits
+              # MissingArgumentsPropertyInGenericTestDeprecation.
+              arguments:
+                values: ['c', 'r']
+      - name: bronze_offset
+        description: >
+          The broker coordinate this row came from. Provenance, and the column both reconciliation
+          tests bound on so a continuously-ingesting simulator cannot make them flap.
+        tests: [not_null]
+
+  # ------------------------------------------------------------------------------------
+  - name: stg_vehicles
+    description: >
+      One row per vehicle_id, CURRENT STATE. Latest change wins. A vehicle whose newest event is a
+      delete is absent rather than stale -- the answer the batch poller structurally could not
+      give. Type 2 history is the Gold ticket's.
+    columns:
+      - name: vehicle_id
+        description: The declared grain. Taken from the after-image, or the before-image on a delete.
+        tests: [not_null]
+      - name: plate
+        description: Registration plate. NOT NULL in the OLTP.
+        tests: [not_null]
+      - name: capacity
+        description: Seats. NOT NULL in the OLTP.
+        tests: [not_null]
+      - name: status
+        description: Operational status as of the newest change.
+        tests: [not_null]
+      - name: current_driver_id
+        description: >
+          Nullable and reassignable in the OLTP (docker/oltp/init.sql:102-103), measured 0% null.
+          No not_null test, and no relationships test -- see the file header.
+      - name: home_depot_id
+        description: Nullable in the OLTP. No relationships test -- see the file header.
+      - name: bronze_op
+        description: >
+          c, u or r. d is excluded by the model's WHERE op <> 'd', which is what makes a deleted
+          vehicle absent rather than present-and-wrong.
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['c', 'u', 'r']
+      - name: source_ts_ms
+        description: >
+          OLTP commit time from the WAL, cast to bigint. Text in Bronze, and the cast matters:
+          text ordering puts '9' after '10', so sorting a 13-digit epoch as text is wrong whenever
+          the digit count changes. This is the column the latest-wins rule orders on.
+        tests: [not_null]
+
+  # ------------------------------------------------------------------------------------
+  - name: stg_depots
+    description: >
+      One row per depot_id, current state, with geometry constructed. Eight rows. The table that
+      changes almost never -- still modelled, because "changes rarely" and "never changes" are
+      different claims and only one of them is safe to build on.
+    columns:
+      - name: depot_id
+        description: The declared grain.
+        tests: [not_null]
+      - name: name
+        description: Depot name. NOT NULL in the OLTP.
+        tests: [not_null]
+      - name: latitude
+        description: Raw degrees. All eight depots sit near 13.4N.
+        tests: [not_null]
+      - name: longitude
+        description: Raw degrees. All eight depots sit between -16.6 and -14.2.
+        tests: [not_null]
+      - name: location
+        description: >
+          GEOMETRY(POINT, 4326), longitude-first. Checkable by eye here, unlike stg_pings, because
+          there are only eight rows -- but asserted by
+          tests/assert_stg_depots_geometry_matches_its_coordinates.sql anyway, because nobody reads
+          a geometry by eye twice.
+      - name: bronze_op
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['c', 'u', 'r']
+      - name: source_ts_ms
+        tests: [not_null]
+
+  # ------------------------------------------------------------------------------------
+  - name: stg_drivers
+    description: >
+      One row per driver_id, current state. Measured 0 of 40 rows changed since creation, so the
+      latest-wins rule has never had to choose between two versions -- the same blind spot the ping
+      deduplication had before a unit test existed.
+    columns:
+      - name: driver_id
+        description: The declared grain.
+        tests: [not_null]
+      - name: full_name
+        tests: [not_null]
+      - name: phone
+        description: >
+          Nullable in the OLTP and measured 0% null. Kept cast-free rather than coalesced to '':
+          an absent phone number and an empty phone number are different facts, and only one of
+          them is true.
+      - name: status
+        tests: [not_null]
+      - name: home_depot_id
+        description: Nullable. No relationships test -- see the file header.
+      - name: bronze_op
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['c', 'u', 'r']
+      - name: source_ts_ms
+        tests: [not_null]
+
+  # ------------------------------------------------------------------------------------
+  - name: stg_jobs
+    description: >
+      One row per job_id, current state. status here is the CURRENT status only; the path a job took
+      to reach it lives in stg_job_events, and the two can legitimately disagree because they are
+      separate WAL rows in separate topics with no ordering guarantee between them.
+
+      Right-censoring is live: 37 of 143 jobs were still open at the phase 1 observation boundary,
+      so a mean duration over this table would silently exclude every unfinished job.
+    columns:
+      - name: job_id
+        description: The declared grain. bigint, not integer -- bigserial in the OLTP.
+        tests: [not_null]
+      - name: vehicle_id
+        description: >
+          Nullable: a job can exist before a vehicle is assigned to it. No relationships test --
+          see the file header.
+      - name: pickup_depot_id
+        tests: [not_null]
+      - name: dropoff_depot_id
+        tests: [not_null]
+      - name: status
+        tests: [not_null]
+      - name: estimated_duration_minutes
+        description: >
+          Frozen at creation and never revised (docker/oltp/init.sql:144-146). An estimate the
+          source system made once, not a measurement -- anything comparing it to actual duration
+          is doing analysis, which is Gold's.
+      - name: requested_at
+        tests: [not_null]
+      - name: bronze_op
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['c', 'u', 'r']
+      - name: source_ts_ms
+        tests: [not_null]
+
+  # ------------------------------------------------------------------------------------
+  - name: stg_job_events
+    description: >
+      One row per job_event_id. Append-only status transitions, deduplicated earliest-observation-
+      wins. Out-of-order arrival is expected: the simulator deliberately emits deliveries that
+      arrive before their own pickup, and max write_lag_seconds was measured at 21,601.7 -- 6.0005
+      hours, just past lateness_bound_hours.
+    columns:
+      - name: job_event_id
+        description: >
+          The declared grain, dug out of payload rather than projected by Bronze. NOT
+          (job_id, to_status): a job may legitimately revisit a status, so a grain built from the
+          business columns would fail on correct data.
+        tests: [not_null]
+      - name: job_id
+        description: >
+          The job this transition belongs to. Comes from a Bronze generated column, unlike
+          job_event_id which comes from the JSON -- an asymmetry nothing in the SQL reveals.
+        tests: [not_null]
+      - name: from_status
+        description: >
+          Status before the transition. NULL for a job's first event, BY DESIGN -- 163 of 579 rows.
+          It is not a missing value, so there is deliberately no not_null test here; adding one
+          would break the build on correct data.
+      - name: to_status
+        tests: [not_null]
+      - name: occurred_at
+        description: >
+          When the transition happened, supplied by the caller, with NO database default
+          (docker/oltp/init.sql:203-213). THIS IS THE EVENT TIME, and it can precede created_at by
+          a lot.
+        tests: [not_null]
+      - name: created_at
+        description: When the row was written. Ours, and trustworthy. Not the same thing as
+          occurred_at, and neither is server_ts.
+        tests: [not_null]
+      - name: write_lag_seconds
+        description: >
+          created_at - occurred_at. Positive means written after it happened, which is normal. A
+          negative value would mean a row claiming to have occurred in the future relative to its
+          own write, which is a finding rather than a number -- not tested, because the honest
+          response to one is to investigate it, not to fail a build.
+      - name: bronze_op
+        description: c and r only. Measured r 535, c 44. 20 deletes arrived in Bronze and are
+          excluded into stg_rejected_rows.
+        tests:
+          - accepted_values:
+              # Nested under `arguments:` because dbt 1.10 deprecated top-level generic-test
+              # arguments. The old form still runs and emits
+              # MissingArgumentsPropertyInGenericTestDeprecation.
+              arguments:
+                values: ['c', 'r']
+      - name: bronze_offset
+        tests: [not_null]
+
+  # ------------------------------------------------------------------------------------
+  - name: stg_rejected_rows
+    description: >
+      Every Bronze row the Silver models could not use, with a reason. Exists because a filtered
+      row that lands nowhere is indistinguishable from a row that never existed, and Bronze went to
+      considerable trouble to keep exactly this evidence.
+
+      36 rows at the time of writing, all of them Debezium deletes on the two append-only streams
+      -- which _sources.yml:50-54 predicted would be "itself a finding". Note their `reason` is
+      currently WRONG for all 36: see the model header for the JSON-null-vs-SQL-NULL bug, ported
+      verbatim so the diff against silver_manual stays honest.
+    columns:
+      - name: source_table
+        description: Which Bronze stream or OLTP entity the row came from.
+        tests: [not_null]
+      - name: reason
+        description: >
+          Free text on purpose. A CHECK or an enum would need editing every time a model learns to
+          reject something new, and this is the layer whose job is to be honest about what it could
+          not handle, not to have anticipated it.
+        tests: [not_null]
+      - name: _topic
+        description: >
+          Part of the declared grain. The Kafka coordinate is kept rather than the business key,
+          because a rejected row may have no usable business key -- that is frequently WHY it was
+          rejected.
+        tests: [not_null]
+      - name: _kafka_partition
+        tests: [not_null]
+      - name: _kafka_offset
+        tests: [not_null]
+      - name: payload
+        description: The Bronze envelope verbatim, so a reject can always be traced to the message
+          behind it.
+        tests: [not_null]
+
+  # ------------------------------------------------------------------------------------
+  - name: ping_quality
+    description: >
+      One row per vehicle per day: gaps, repeats and the lateness distribution. A diagnostic -- a
+      human reads this. Bucketed by device_ts, the UNTRUSTWORTHY timestamp, because the question it
+      answers is "what did the device claim about its own day"; bucketing by server_ts would answer
+      "what did we receive when", which is a different table and the one the lateness policy needs.
+    columns:
+      - name: vehicle_id
+        description: Half the declared grain.
+        tests: [not_null]
+      - name: event_date
+        description: The other half, from device_ts at UTC.
+        tests: [not_null]
+      - name: pings
+        tests: [not_null]
+      - name: gaps
+        description: >
+          Rows where sequence_no jumped by more than 1. A gap PROVES data was lost, where an
+          unchanging position with NO gap proves the vehicle stopped -- sequence_no is the only
+          thing that separates those two, which makes it the most load-bearing column upstream.
+        tests: [not_null]
+      - name: rows_missing
+        description: >
+          Rows lost, not gap events. One gap of 50 is worse than five gaps of 2, and a count of
+          gaps alone cannot tell those apart.
+        tests: [not_null]
+      - name: repeats
+        description: >
+          sequence_no did not advance. The app has no unique constraint on
+          (vehicle_id, sequence_no), deliberately, so the warehouse is where this is detected.
+          Measured 0 -- after a real bug that produced 7,201 of them.
+        tests: [not_null]
+      - name: lateness_p99
+        description: >
+          The floor for any watermark the lateness work chooses. A bound below this would
+          quarantine correct data before any pathology exists.
+      - name: negative_lateness
+        description: >
+          Rows where server_ts landed BEFORE device_ts -- impossible for a clock merely wrong in
+          the usual direction. Not tested, deliberately: the honest response to one is to
+          investigate the host clock, and the claim that server_ts is trustworthy needs this
+          number visible rather than enforced away. It has paid out twice.
+        tests: [not_null]
+
+  # ------------------------------------------------------------------------------------
+  - name: vehicle_day
+    description: >
+      One row per vehicle per day: ping counts, speed, distinct positions and distance travelled.
+      THE ONLY MODEL IN THIS LAYER WHERE THE GRAIN ASSERTION CAN FAIL ON A LIVE HAZARD -- it joins
+      three relations, so a duplicate in stg_vehicles doubles every number here at once, with no
+      error and no warning.
+
+      Its inner join on stg_vehicles is a documented wrongness: a deleted vehicle takes its whole
+      day with it, even though those pings really happened and sit in stg_pings. Losing rows
+      preserves uniqueness, so no grain assertion catches it -- see the model header.
+    columns:
+      - name: vehicle_id
+        description: Half the declared grain.
+        tests: [not_null]
+      - name: event_date
+        description: The other half, from device_ts at UTC -- the only ordering that describes the
+          vehicle's own path.
+        tests: [not_null]
+      - name: plate
+        description: >
+          From stg_vehicles via the inner join. No not_null test even though plate is NOT NULL
+          upstream: the assertion would be true for a reason that has nothing to do with this
+          model, and would pass just as happily after the join dropped every row it should have
+          kept.
+      - name: home_depot_name
+        description: >
+          Left-joined, because a depot that has not been captured yet should not delete a
+          vehicle's day. Legitimately null, so no test.
+      - name: pings
+        description: >
+          Should sum to stg_pings' row count across all rows. Measured 173,046 = 173,046, which
+          means the inner join currently drops nothing -- latent, not fixed. Not asserted here,
+          because it is a claim about two models rather than a property of one.
+        tests: [not_null]
+      - name: distinct_positions
+        description: >
+          Separates a parked vehicle from a moving one without needing a speed threshold. A
+          vehicle reporting 700 pings from 3 positions did not drive.
+        tests: [not_null]
+      - name: avg_speed_kmh
+        description: >
+          Nullable: avg() over all-null speeds is null. Read it beside speed_missing, never alone.
+      - name: speed_missing
+        description: >
+          Null speed readings, counted rather than ignored, because avg() skips them silently and
+          an average over 3 of 700 readings looks exactly like an average over 700.
+        tests: [not_null]
+      - name: distance_metres
+        description: >
+          Straight-line legs summed, in METRES on a spheroid -- the geometry is cast to geography
+          first, because ST_Distance on geometry in SRID 4326 returns degrees, which is a number
+          that looks like a distance and is not one. Nullable: a vehicle-day with one ping has no
+          leg. Fleet total measured 12,952.5 km.

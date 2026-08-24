@@ -1,0 +1,108 @@
+version: 2
+
+# Unit tests: assertions about MODEL LOGIC, run against fixture rows rather than against the
+# warehouse's contents. Available because pyproject.toml pins dbt-postgres>=1.8.
+#
+# WHY THERE IS ONE HERE AND NOT ELSEWHERE. A unit test earns its place when a rule cannot be
+# checked against real data, and the deduplication rule was the clearest case in the project:
+# docs/silver-by-hand.md section 2 measured 350,742 bronze rows and 350,742 distinct ping_ids, so
+# DISTINCT ON discarded nothing and stg_pings emitted identical rows whether the rule was right,
+# reversed, or absent. Reading the table could not tell you. Reading the query could not either --
+# `ORDER BY ping_id, _kafka_partition, _kafka_offset` looks equally plausible reversed.
+#
+# BRONZE HAS SINCE ACQUIRED 20 GENUINE DUPLICATES -- a producer-side redelivery, both copies op='c',
+# every pair 20 offsets apart -- so the rule now does visible work. That does NOT retire this test,
+# for two reasons worth keeping:
+#
+#   1. The grain assertion still cannot settle the rule. It proves one row per ping_id, which is
+#      true under both orderings. Only supplying a KNOWN duplicate and naming which copy must
+#      survive distinguishes them.
+#   2. Because both real copies are op='c', the "prefer op='c'" tie-break cannot choose between
+#      them at all. Lowest-offset is the only rule that resolves the case that actually happened,
+#      and this fixture is what pins it.
+#
+# Written before any real duplicate existed, which is exactly when such a test has to be written --
+# an assertion added after the divergence cannot tell you which side of it was right.
+#
+# FORMAT: SQL RATHER THAN DICT, DELIBERATELY. bronze.payload is jsonb and the model applies -> and
+# #>> to it. In dict format dbt renders a fixture value as a bare literal, so the JSON arrives as
+# an untyped string and the model fails with "operator does not exist: text -> unknown". A SQL
+# fixture makes every cast explicit, which is also the only way to hand a geometry to `expect`.
+
+unit_tests:
+  # Name kept short on purpose: dbt materialises a unit test as a relation, so the name is
+  # subject to Postgres's 63-character identifier limit. The first attempt at a self-describing
+  # name was 64 and failed with "Relation name ... is longer than 63 characters", which reads
+  # like a dbt bug rather than a naming rule. The detail lives in description instead.
+  - name: stg_pings_dedup_keeps_earliest_observation
+    model: stg_pings
+    description: >
+      Two bronze rows, one ping_id. Offset 10 is the streamed create (op='c'); offset 99 is a
+      snapshot re-read (op='r') of the same row, which is what re-registering the connector
+      against a fresh offset produces. Earliest offset must win, because a ping is immutable in
+      the OLTP -- inserted with ON CONFLICT (ping_id) DO NOTHING, never updated, never deleted --
+      so the first observation of it is the truest one.
+
+      Reverse the ORDER BY in stg_pings.sql and this test fails while
+      assert_stg_pings_unique_on_ping_id.sql still passes. That contrast is the argument for this
+      whole ticket, and it is the reason a grain assertion alone is not enough.
+
+      The re-read carries latitude 99.0 -- an impossible value on Earth, chosen so that if the
+      wrong row ever survives, the geometry test and any human reading the output both notice
+      rather than having to compare offsets.
+    given:
+      - input: source('bronze', 'raw_ping_events')
+        format: sql
+        rows: |
+          SELECT 'fleet.public.pings'::text AS _topic,
+                 0::integer AS _kafka_partition,
+                 10::bigint AS _kafka_offset,
+                 NULL::bigint AS _kafka_timestamp,
+                 '2026-08-11T10:53:24Z'::timestamptz AS _ingested_at,
+                 '{"op": "c", "after": {"ping_id": "11111111-1111-1111-1111-111111111111", "vehicle_id": 7, "sequence_no": 42, "device_ts": "2026-08-11T10:52:49.599265Z", "server_ts": "2026-08-11T10:53:23.599265Z", "latitude": 13.441566, "longitude": -16.123891, "speed_kmh": 22.5, "heading_deg": 90}}'::jsonb AS payload,
+                 NULL::text AS raw_payload,
+                 NULL::text AS parse_error,
+                 'c'::text AS op,
+                 '11111111-1111-1111-1111-111111111111'::text AS ping_id,
+                 '42'::text AS sequence_no,
+                 '2026-08-11T10:52:49.599265Z'::text AS device_ts,
+                 '2026-08-11T10:53:23.599265Z'::text AS server_ts
+          UNION ALL
+          SELECT 'fleet.public.pings'::text,
+                 0::integer,
+                 99::bigint,
+                 NULL::bigint,
+                 '2026-08-12T09:00:00Z'::timestamptz,
+                 '{"op": "r", "after": {"ping_id": "11111111-1111-1111-1111-111111111111", "vehicle_id": 7, "sequence_no": 42, "device_ts": "2026-08-11T10:52:49.599265Z", "server_ts": "2026-08-11T10:53:23.599265Z", "latitude": 99.0, "longitude": -16.123891, "speed_kmh": 22.5, "heading_deg": 90}}'::jsonb,
+                 NULL::text,
+                 NULL::text,
+                 'r'::text,
+                 '11111111-1111-1111-1111-111111111111'::text,
+                 '42'::text,
+                 '2026-08-11T10:52:49.599265Z'::text,
+                 '2026-08-11T10:53:23.599265Z'::text
+    expect:
+      format: sql
+      rows: |
+        SELECT '11111111-1111-1111-1111-111111111111'::uuid AS ping_id,
+               7::integer AS vehicle_id,
+               42::bigint AS sequence_no,
+               '2026-08-11T10:52:49.599265Z'::timestamptz AS device_ts,
+               '2026-08-11T10:53:23.599265Z'::timestamptz AS server_ts,
+               -- 34 seconds exactly, which is also the measured p50 lateness. Written to scale 6
+               -- rather than as 34.0: EXTRACT(EPOCH FROM interval) returns numeric(_, 6) on
+               -- Postgres 16, dbt compares rendered values, and 34.0 vs 34.000000 fails the
+               -- comparison on a number that is equal. Fixed here rather than in the model --
+               -- the model must stay byte-identical to sql/silver/10_stg_pings.sql for the
+               -- EXCEPT diff to mean anything.
+               34.000000::numeric AS lateness_seconds,
+               13.441566::double precision AS latitude,
+               -16.123891::double precision AS longitude,
+               22.5::double precision AS speed_kmh,
+               90::double precision AS heading_deg,
+               ST_SetSRID(ST_MakePoint(-16.123891, 13.441566), 4326) AS position,
+               'c'::text AS bronze_op,
+               'fleet.public.pings'::text AS bronze_topic,
+               0::integer AS bronze_partition,
+               10::bigint AS bronze_offset,
+               '2026-08-11T10:53:24Z'::timestamptz AS bronze_ingested_at

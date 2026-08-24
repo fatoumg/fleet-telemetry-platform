@@ -170,29 +170,57 @@ def test_the_derived_tables_hold_their_composite_grain(warehouse, table):
 
 @pytest.mark.integration
 def test_nothing_was_dropped_without_being_recorded(warehouse):
-    """Bronze rows in == Silver rows out + rejects, bounded to what Silver actually read.
+    """Bronze rows in == Silver out + rejects + duplicates removed, bounded to what Silver read.
 
     Bounded by max(bronze_offset) rather than counting all of bronze, because the simulator is
     usually still running and bronze grows during the test. Comparing unbounded counts would
     fail for a reason that has nothing to do with correctness -- and would then be "fixed" by
     loosening the assertion, which is how a real reconciliation test becomes decorative.
+
+    THE DUPLICATE TERM WAS MISSING AND THAT WAS A REAL BUG. This assertion read
+    `bronze == silver + rejects` for as long as DISTINCT ON (ping_id) discarded nothing -- which
+    docs/silver-by-hand.md section 2 measured directly: 350,742 rows, 350,742 distinct ids, zero
+    removed. The rule was doing no work, so the arithmetic balanced without accounting for it.
+
+    Then bronze acquired genuine duplicates and this failed on a pipeline that was working
+    correctly, short by exactly the number deduplicated:
+
+        bronze 190,520 = silver 190,484 + rejects 16 + duplicates 20
+
+    20 ping_ids appeared twice, every pair exactly 20 offsets apart, and BOTH copies carried
+    op='c' -- a producer-side redelivery, which the unique index on
+    (_kafka_partition, _kafka_offset) cannot absorb because the copies landed at DIFFERENT
+    offsets. Note that "prefer op='c'" cannot separate those two, so lowest-offset is the only
+    tie-break that resolves them, which is the rule 10_stg_pings.sql actually uses.
+
+    The duplicate count is computed from BRONZE, not from the model. The reject predicate is the
+    exact complement of the script's `usable` filter, so bronze - rejects == usable identically,
+    and deriving the duplicate count that way would assert nothing at all.
+
+    `ping_id is not null` alone characterises the usable set: ping_id is a generated column
+    projected from payload, so a row whose bytes never parsed has a null payload and therefore a
+    null ping_id -- parse_error and a missing after-image are both already implied.
     """
-    bronze, silver, rejects = _one(
+    bronze, silver, rejects, duplicates = _one(
         warehouse,
         """
         select (select count(*) from bronze.raw_ping_events
                  where _kafka_offset <= bound.m),
                (select count(*) from silver_manual.stg_pings),
                (select count(*) from silver_manual.rejected_rows
-                 where source_table = 'raw_ping_events')
+                 where source_table = 'raw_ping_events'
+                   and _kafka_offset <= bound.m),
+               (select count(*) - count(distinct ping_id) from bronze.raw_ping_events
+                 where ping_id is not null
+                   and _kafka_offset <= bound.m)
           from (select max(bronze_offset) as m from silver_manual.stg_pings) bound
         """,
     )
-    # Any shortfall beyond the recorded rejects is a row that vanished with no evidence, which
-    # is the one outcome Bronze exists to make impossible.
-    assert bronze == silver + rejects, (
-        f"bronze {bronze} != silver {silver} + rejects {rejects}; "
-        f"{bronze - silver - rejects} rows went missing unrecorded"
+    # Any shortfall beyond the recorded rejects and the deduplicated copies is a row that vanished
+    # with no evidence, which is the one outcome Bronze exists to make impossible.
+    assert bronze == silver + rejects + duplicates, (
+        f"bronze {bronze} != silver {silver} + rejects {rejects} + duplicates {duplicates}; "
+        f"{bronze - silver - rejects - duplicates} rows went missing unrecorded"
     )
 
 
