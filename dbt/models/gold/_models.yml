@@ -146,3 +146,100 @@ models:
         description: The other half. Provenance, and the tie-break that makes the version order
           deterministic rather than merely usually right.
         tests: [not_null]
+
+  # ------------------------------------------------------------------------------------
+  - name: dim_driver
+    description: >
+      Type 2 dimension: one row per driver_id per validity interval, half-open
+      [valid_from, valid_to). Same shape as dim_vehicle and the same rules; the reasoning is in
+      dim_vehicle.sql.
+
+      NOT THE EMPTY DIMENSION THE DESIGN EXPECTED. docs/source-system-reference.md section 7
+      measured 0 of 40 drivers changed since creation, and the plan for this model expected 40
+      rows, all current, none deleted. Measured now: 79 versions across 43 distinct driver_ids, 40
+      current, 17 closed by a hard delete, 40 beginning at the Debezium snapshot. It reconciles the
+      same way dim_vehicle does -- 43 first versions plus 36 real changes, from 91 non-delete
+      events with 12 no-op UPDATEs suppressed.
+
+      The churn is the integration suite, not the fleet: the simulator never revises a driver once
+      seeded, and tests/test_app.py patches and hard-deletes disposable test drivers on every run.
+      That does not make the history less real, but it does mean the number moves with the test
+      suite rather than with the domain.
+    columns:
+      - name: driver_id
+        description: >
+          Half the declared grain -- see
+          dbt/tests/assert_dim_driver_unique_on_driver_and_valid_from.sql. 43 ids hold 79 rows, so
+          a join on driver_id alone fans a fact out across every version of the driver.
+        tests: [not_null]
+      - name: full_name
+        description: >
+          Driver name as of this interval. NOT NULL in the OLTP and non-null here because delete
+          rows are filtered out -- see the file header on why no not_null test.
+      - name: phone
+        description: >
+          Nullable in the OLTP (docker/oltp/init.sql:83) and NO LONGER 0% NULL as phase 1 measured:
+          15 of the 79 versions here carry a null phone, all of them driver 9401, whose test
+          fixture inserts no phone number. Tracked, and null is a distinct tracked value -- 6
+          versions exist because the phone changed and nothing else did. See dim_driver.sql on why
+          the jsonb comparison is what makes the null boundary work, and why that boundary is still
+          unexercised (0 null-to-value and 0 value-to-null transitions measured).
+      - name: status
+        description: Operational status as of this interval. Same reasoning as full_name.
+      - name: home_depot_id
+        description: >
+          Which depot the driver is attached to as of this interval. No relationships test to
+          dim_depot -- there is no dim_depot yet, and see the file header for why there would not
+          be a test even once there is.
+      - name: created_at
+        description: >
+          When the OLTP row was created. A property of the driver, repeated on every version, and
+          NOT the start of the first interval -- see dim_vehicle.created_at.
+      - name: valid_from
+        description: >
+          Inclusive start of this version's validity, from the WAL commit time of the event that
+          created it. The other half of the declared grain.
+        tests: [not_null]
+      - name: valid_to
+        description: >
+          Exclusive end, equal to the next version's valid_from, or NULL when still open. NO
+          not_null TEST -- see the file header.
+      - name: is_current
+        description: >
+          True when valid_to is null. False on the final version of a deleted driver: 17 of the 79
+          versions here were closed by a hard delete, which is what makes this dimension
+          non-trivial where the design expected it to be empty.
+        tests: [not_null]
+      - name: is_deleted
+        description: >
+          True when the event that closed this interval was a Debezium delete. coalesce(next_op =
+          'd', false), not next_op = 'd' -- see dim_vehicle.is_deleted.
+        tests: [not_null]
+      - name: valid_from_is_observation_start
+        description: >
+          True when this version began at the Debezium snapshot (op='r') rather than at an observed
+          change -- 40 of 79 rows. A fabricated boundary, marked rather than hidden; see
+          dim_vehicle.valid_from_is_observation_start.
+        tests: [not_null]
+      - name: source_op
+        description: >
+          The Debezium op of the event that OPENED this interval. c, u or r -- no 'd', because a
+          delete is not a version. A delete is visible here only through is_deleted on the version
+          it closed.
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['c', 'u', 'r']
+      - name: source_ts_ms
+        description: valid_from as the raw millisecond epoch, and what the version ordering
+          compares on. See dim_vehicle.source_ts_ms.
+        tests: [not_null]
+      - name: bronze_partition
+        description: >
+          Provenance -- the broker coordinate of the event that opened this interval, and half of
+          the ordering tie-break when two events share a source_ts_ms.
+        tests: [not_null]
+      - name: bronze_offset
+        description: The other half. Provenance, and the tie-break that makes the version order
+          deterministic rather than merely usually right.
+        tests: [not_null]
