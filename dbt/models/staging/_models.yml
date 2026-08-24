@@ -153,6 +153,76 @@ models:
         tests: [not_null]
 
   # ------------------------------------------------------------------------------------
+  - name: stg_vehicle_versions
+    description: >
+      One row per vehicle CHANGE EVENT, not per vehicle -- the same Bronze rows as stg_vehicles,
+      without the DISTINCT ON that collapses them to current state. Answers "what has ever been
+      true of vehicle 17" rather than only "what is true of it now", and keeps DELETE rows that
+      stg_vehicles excludes: a delete is not a version, but it is the event that ends the previous
+      one. Feeds gold.dim_vehicle, which turns these rows into validity intervals -- that judgement,
+      and every other one, belongs to Gold rather than here.
+    columns:
+      - name: vehicle_id
+        description: >
+          The entity this event describes, not the declared grain -- see
+          dbt/tests/assert_stg_vehicle_versions_unique_on_kafka_coordinate.sql for that. NOT NULL
+          because the model filters entity_key IS NOT NULL upstream, so every row here is
+          attributable to a vehicle even when the row is a delete.
+        tests: [not_null]
+      - name: plate
+        description: >
+          From the after-image. NULL on a delete row, BY DESIGN -- a delete has no after-image, and
+          that null is what makes it impossible to mistake for a version in which the plate became
+          unknown. No not_null test, unlike stg_vehicles: the OLTP's NOT NULL constraint binds a
+          live row, and this model deliberately keeps rows that describe none.
+      - name: capacity
+        description: Same reasoning as plate -- null on a delete row, by design.
+      - name: status
+        description: Same reasoning as plate -- null on a delete row, by design.
+      - name: current_driver_id
+        description: >
+          Nullable and reassignable even on a live row (docker/oltp/init.sql:102-103); also null on
+          a delete row like every other attribute above.
+      - name: home_depot_id
+        description: >
+          Nullable on a live row, and null on a delete row like every other attribute above.
+      - name: created_at
+        description: From the after-image. Null on a delete row like every other attribute above.
+      - name: updated_at
+        description: From the after-image. Null on a delete row like every other attribute above.
+      - name: bronze_op
+        description: >
+          c, u, d OR r -- all four, unlike stg_vehicles' ['c', 'u', 'r']. Keeping d is the point of
+          this model: it carries no attributes, but it is the event that closes the previous
+          version, and dropping it here would make that unrecoverable in Gold.
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['c', 'u', 'd', 'r']
+      - name: source_ts_ms
+        description: >
+          OLTP commit time from the WAL, cast to bigint. What the ordering and the tie-break use --
+          integers compare exactly, which is why this is projected alongside committed_at rather
+          than instead of it.
+        tests: [not_null]
+      - name: committed_at
+        description: >
+          source_ts_ms, rendered as a timestamptz. What a validity range must be expressed in -- a
+          bigint epoch is not a point in time to anyone reading a dimension.
+        tests: [not_null]
+      - name: bronze_partition
+        description: >
+          Half the declared grain -- see
+          dbt/tests/assert_stg_vehicle_versions_unique_on_kafka_coordinate.sql for why partition
+          and offset suffice without _topic.
+        tests: [not_null]
+      - name: bronze_offset
+        description: >
+          The other half of the declared grain, and the column both reconciliation tests bound on
+          so a continuously-ingesting simulator cannot make them flap.
+        tests: [not_null]
+
+  # ------------------------------------------------------------------------------------
   - name: stg_depots
     description: >
       One row per depot_id, current state, with geometry constructed. Eight rows. The table that
@@ -212,6 +282,58 @@ models:
               arguments:
                 values: ['c', 'u', 'r']
       - name: source_ts_ms
+        tests: [not_null]
+
+  # ------------------------------------------------------------------------------------
+  - name: stg_driver_versions
+    description: >
+      One row per driver CHANGE EVENT, not per driver -- same shape as stg_vehicle_versions, and the
+      reasoning about deletes, suppression and intervals lives there. No longer a quiet case with
+      nothing to show: 17 c, 34 u, 17 d, 40 r measured against Bronze, 36 real changes and 12 no-op
+      updates under the tracked-attribute rule across 43 distinct entities -- driven by the
+      integration suite's disposable test drivers (tests/test_app.py), not by the simulator, which
+      never revises a driver once seeded. Feeds gold.dim_driver.
+    columns:
+      - name: driver_id
+        description: >
+          The entity this event describes, not the declared grain -- see
+          dbt/tests/assert_stg_driver_versions_unique_on_kafka_coordinate.sql for that.
+        tests: [not_null]
+      - name: full_name
+        description: From the after-image. NULL on a delete row, by design -- see stg_vehicle_versions.
+      - name: phone
+        description: >
+          Nullable on a live row and null on a delete row, for two different reasons that happen to
+          look the same: an absent phone number is a fact about the driver, and a null attribute
+          on a delete row is a fact about the event carrying no after-image.
+      - name: status
+        description: From the after-image. Null on a delete row, by design -- see stg_vehicle_versions.
+      - name: home_depot_id
+        description: Nullable on a live row, and null on a delete row like every other attribute above.
+      - name: created_at
+        description: From the after-image. Null on a delete row like every other attribute above.
+      - name: updated_at
+        description: From the after-image. Null on a delete row like every other attribute above.
+      - name: bronze_op
+        description: >
+          c, u, d OR r -- all four, unlike stg_drivers' ['c', 'u', 'r']. See
+          stg_vehicle_versions.bronze_op for why keeping d is the point of this model.
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['c', 'u', 'd', 'r']
+      - name: source_ts_ms
+        tests: [not_null]
+      - name: committed_at
+        description: source_ts_ms, rendered as a timestamptz -- see stg_vehicle_versions.committed_at.
+        tests: [not_null]
+      - name: bronze_partition
+        description: Half the declared grain -- see stg_vehicle_versions.bronze_partition.
+        tests: [not_null]
+      - name: bronze_offset
+        description: >
+          The other half of the declared grain, and the column both reconciliation tests bound on
+          so a continuously-ingesting simulator cannot make them flap.
         tests: [not_null]
 
   # ------------------------------------------------------------------------------------
