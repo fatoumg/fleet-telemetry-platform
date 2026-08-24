@@ -2,12 +2,16 @@
 -- Shared scaffolding for the models that read bronze.raw_cdc_entities.
 -- --------------------------------------------------------------------------------------
 --
--- SIX MODELS NOW READ THIS TABLE, which is why this file exists and did not before.
--- stg_vehicles.sql:20-26 argued against extracting it while four models duplicated it: the
--- duplication had not bitten, and a tool introduced before its problem is a tool you cannot
--- explain. The Gold ticket is where it bites -- stg_vehicle_versions and stg_driver_versions
--- need the `usable` half and must NOT have the `latest` half, so the two CTEs stop being one
--- block that is always copied together and become two independently-chosen pieces.
+-- FIVE MODELS READ THIS TABLE TODAY. Four of them -- stg_vehicles, stg_drivers, stg_depots,
+-- stg_jobs -- call the two macros below. The fifth, stg_rejected_rows, reads
+-- bronze.raw_cdc_entities directly and calls neither: it needs the raw rows across all four
+-- source_tables at once, not one entity's usable/latest pair, so this scaffolding does not fit it.
+-- This file did not always exist -- the duplication across the four callers had not bitten, and a
+-- tool introduced before its problem is a tool you cannot explain. The Gold ticket is where it
+-- bites -- stg_vehicle_versions and stg_driver_versions need the `usable` half and must NOT have
+-- the `latest` half, so the two CTEs stop being one block that is always copied together and
+-- become two independently-chosen pieces. After that ticket lands, seven models read this table
+-- and six of them call this macro.
 --
 -- FOUR ENTITIES SHARE ONE BRONZE TABLE, distinguished only by source_table -- and there is no
 -- CHECK and no index on that column (src/fleet_telemetry/load/schema.py:81-95). So every caller
