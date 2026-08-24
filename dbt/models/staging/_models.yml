@@ -136,7 +136,9 @@ models:
           Nullable and reassignable in the OLTP (docker/oltp/init.sql:102-103), measured 0% null.
           No not_null test, and no relationships test -- see the file header.
       - name: home_depot_id
-        description: Nullable in the OLTP. No relationships test -- see the file header.
+        description: >
+          NOT NULL in the OLTP (docker/oltp/init.sql:105). No not_null test here anyway, and no
+          relationships test -- see the file header.
       - name: bronze_op
         description: >
           c, u or r. d is excluded by the model's WHERE op <> 'd', which is what makes a deleted
@@ -185,7 +187,9 @@ models:
           a delete row like every other attribute above.
       - name: home_depot_id
         description: >
-          Nullable on a live row, and null on a delete row like every other attribute above.
+          NOT NULL in the OLTP (docker/oltp/init.sql:105). No not_null test here, unlike
+          stg_vehicles: the OLTP's NOT NULL constraint binds a live row, and this model
+          deliberately keeps rows -- deletes -- that describe none.
       - name: created_at
         description: From the after-image. Null on a delete row like every other attribute above.
       - name: updated_at
@@ -275,7 +279,9 @@ models:
       - name: status
         tests: [not_null]
       - name: home_depot_id
-        description: Nullable. No relationships test -- see the file header.
+        description: >
+          NOT NULL in the OLTP (docker/oltp/init.sql:86). No not_null test here anyway, and no
+          relationships test -- see the file header.
       - name: bronze_op
         tests:
           - accepted_values:
@@ -309,7 +315,10 @@ models:
       - name: status
         description: From the after-image. Null on a delete row, by design -- see stg_vehicle_versions.
       - name: home_depot_id
-        description: Nullable on a live row, and null on a delete row like every other attribute above.
+        description: >
+          NOT NULL in the OLTP (docker/oltp/init.sql:86). No not_null test here, unlike
+          stg_drivers: the OLTP's NOT NULL constraint binds a live row, and this model
+          deliberately keeps rows -- deletes -- that describe none.
       - name: created_at
         description: From the after-image. Null on a delete row like every other attribute above.
       - name: updated_at
