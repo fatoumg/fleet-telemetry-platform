@@ -11,7 +11,7 @@
 -- real reason rather than vacuously -- there are 63 closed intervals here for it to check, unlike
 -- assert_dim_driver_intervals_are_non_empty.sql's original expectation of none.
 --
--- ASSERTED AT ERROR SEVERITY (dbt/dbt_project.yml:43-45) EVEN THOUGH IT COULD FIRE ON CORRECT
+-- ASSERTED AT ERROR SEVERITY (dbt/dbt_project.yml:44-46) EVEN THOUGH IT COULD FIRE ON CORRECT
 -- INGESTION. Two genuine commits to one vehicle inside one millisecond is not a pipeline bug --
 -- but a dimension containing an unselectable row is still wrong, and the right response is to
 -- decide what to do about it rather than to discover it in a query six months from now. If it

@@ -10,7 +10,7 @@
 -- broken lead() produces -- and every "what did the fleet look like on the 14th" query would
 -- then return the entire history for every vehicle rather than one row each.
 --
--- Severity is error project-wide (dbt/dbt_project.yml:43-45).
+-- Severity is error project-wide (dbt/dbt_project.yml:44-46).
 
 SELECT vehicle_id, count(*) AS current_versions
   FROM {{ ref('dim_vehicle') }}

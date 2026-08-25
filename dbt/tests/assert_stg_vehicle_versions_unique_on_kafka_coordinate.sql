@@ -11,7 +11,7 @@
 -- is projected from the payload's source.table and is 1:1 with the topic, so within this model
 -- the pair is unique. Remove that filter and this test starts failing correctly.
 --
--- Severity is error project-wide (dbt/dbt_project.yml:43-45). A duplicate here is a duplicate
+-- Severity is error project-wide (dbt/dbt_project.yml:44-46). A duplicate here is a duplicate
 -- version in dim_vehicle: it would produce a zero-width validity interval, which
 -- assert_dim_vehicle_intervals_are_non_empty.sql would then also catch -- two tests firing on
 -- one cause, and this is the one that names it.

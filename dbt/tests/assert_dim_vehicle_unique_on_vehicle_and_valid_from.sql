@@ -10,7 +10,7 @@
 -- one millisecond would produce two versions sharing a valid_from, and the tie-break on
 -- (bronze_partition, bronze_offset) orders them but does not separate their timestamps.
 --
--- Severity is error project-wide (dbt/dbt_project.yml:43-45).
+-- Severity is error project-wide (dbt/dbt_project.yml:44-46).
 
 SELECT vehicle_id, valid_from, count(*) AS row_count
   FROM {{ ref('dim_vehicle') }}
