@@ -262,9 +262,13 @@ models:
   # ------------------------------------------------------------------------------------
   - name: stg_drivers
     description: >
-      One row per driver_id, current state. Measured 0 of 40 rows changed since creation, so the
-      latest-wins rule has never had to choose between two versions -- the same blind spot the ping
-      deduplication had before a unit test existed.
+      One row per driver_id, current state. docs/source-system-reference.md section 7 measured 0
+      of 40 drivers changed since creation, in phase 1, before any change stream existed to
+      exercise latest-wins at all. That remains true of the original 40 fleet-seeded drivers; it
+      is no longer true of this table as a whole, now that the integration suite's high-id test
+      drivers churn on every run -- see stg_driver_versions for the measured churn, and note the
+      same blind spot the ping deduplication had before a unit test existed still applies here:
+      latest-wins is exercised by real data now, but no unit test pins it.
     columns:
       - name: driver_id
         description: The declared grain.
@@ -273,9 +277,11 @@ models:
         tests: [not_null]
       - name: phone
         description: >
-          Nullable in the OLTP and measured 0% null. Kept cast-free rather than coalesced to '':
-          an absent phone number and an empty phone number are different facts, and only one of
-          them is true.
+          Nullable in the OLTP and measured 0% null in current state -- the one driver whose
+          fixture leaves it null (9401) is hard-deleted as of this writing, so this current-state
+          model never sees the null; stg_driver_versions does. Kept cast-free rather than
+          coalesced to '': an absent phone number and an empty phone number are different facts,
+          and only one of them is true.
       - name: status
         tests: [not_null]
       - name: home_depot_id

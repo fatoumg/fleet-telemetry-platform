@@ -7,9 +7,13 @@
 -- produce a version that is valid for no instant at all. `valid_from <= t < valid_to` can never
 -- select it, so it is a version the dimension holds and can never return.
 --
--- Measured on this volume: 0 zero-width intervals across 103 versions. So this passes today for a
--- real reason rather than vacuously -- there are 63 closed intervals here for it to check, unlike
--- assert_dim_driver_intervals_are_non_empty.sql's original expectation of none.
+-- Measured at the time of writing: 0 zero-width intervals across 103 versions -- a reading, not
+-- an invariant; the volume ingests continuously, so the total has since moved (see
+-- docs/type-2-dimensions.md for a fresher count). It passed for a real reason rather than
+-- vacuously at that reading -- there were 63 closed intervals to check, unlike
+-- assert_dim_driver_intervals_are_non_empty.sql's original expectation of none -- and the reason
+-- does not depend on the specific count: any non-zero number of closed intervals makes this test
+-- non-vacuous.
 --
 -- ASSERTED AT ERROR SEVERITY (dbt/dbt_project.yml:44-46) EVEN THOUGH IT COULD FIRE ON CORRECT
 -- INGESTION. Two genuine commits to one vehicle inside one millisecond is not a pipeline bug --

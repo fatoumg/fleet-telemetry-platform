@@ -468,6 +468,11 @@ Not defects; loose ends that will be harder to reconstruct later.
 - An open question deferred with the poller: whether `capture_run_stats.cycles` should be `units`,
   so the same column can count polls and Kafka batches. Deferred until the CDC consumer's stats
   shape is settled.
+- `dbt snapshot` prints a benign WARN on every run of `snap_vehicles` / `snap_drivers`: *"DATETIME
+  doesn't match DATETIMETZ"*. The columns involved are correctly `timestamptz` in both the OLTP and
+  the warehouse; the mismatch is dbt-postgres's adapter-side type inference for snapshot metadata
+  columns, not a schema defect, and there is nothing to fix in this repo. Recorded here so the next
+  person does not spend an hour re-deriving that it is benign.
 
 ---
 

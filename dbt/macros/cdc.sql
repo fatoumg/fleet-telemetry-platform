@@ -2,16 +2,18 @@
 -- Shared scaffolding for the models that read bronze.raw_cdc_entities.
 -- --------------------------------------------------------------------------------------
 --
--- FIVE MODELS READ THIS TABLE TODAY. Four of them -- stg_vehicles, stg_drivers, stg_depots,
--- stg_jobs -- call the two macros below. The fifth, stg_rejected_rows, reads
--- bronze.raw_cdc_entities directly and calls neither: it needs the raw rows across all four
--- source_tables at once, not one entity's usable/latest pair, so this scaffolding does not fit it.
--- This file did not always exist -- the duplication across the four callers had not bitten, and a
--- tool introduced before its problem is a tool you cannot explain. The Gold ticket is where it
--- bites -- stg_vehicle_versions and stg_driver_versions need the `usable` half and must NOT have
--- the `latest` half, so the two CTEs stop being one block that is always copied together and
--- become two independently-chosen pieces. After that ticket lands, seven models read this table
--- and six of them call this macro.
+-- SEVEN MODELS READ THIS TABLE TODAY. Six of them -- stg_vehicles, stg_drivers, stg_depots,
+-- stg_jobs, stg_vehicle_versions, stg_driver_versions -- call cdc_usable. Four of those six --
+-- stg_vehicles, stg_drivers, stg_depots, stg_jobs -- also call cdc_latest, since only a
+-- current-state model needs latest-wins; the two version models must NOT collapse to one row per
+-- key, so they stop at `usable`. The seventh, stg_rejected_rows, reads bronze.raw_cdc_entities
+-- directly and calls neither: it needs the raw rows across all four source_tables at once, not one
+-- entity's usable/latest pair, so this scaffolding does not fit it.
+-- This file did not always exist -- the duplication across the original four callers had not
+-- bitten, and a tool introduced before its problem is a tool you cannot explain. Issue #13 is where
+-- it bit -- stg_vehicle_versions and stg_driver_versions needed the `usable` half and must NOT have
+-- the `latest` half, so the two CTEs stopped being one block that was always copied together and
+-- became two independently-chosen pieces.
 --
 -- FOUR ENTITIES SHARE ONE BRONZE TABLE, distinguished only by source_table -- and there is no
 -- CHECK and no index on that column (src/fleet_telemetry/load/schema.py:81-95). So every caller

@@ -89,7 +89,7 @@ carry `is_deleted = true`. `DELETE /vehicles/{id}` is a hard delete on purpose (
 deleted row leaves nothing behind for a poller — or a `dbt snapshot` — to find, no matter how
 tight the interval. Shortening the poll from ten minutes to ten seconds would not have found these
 four vehicles; they were never there to find. This is the same lesson phase 2's poller-vs-CDC
-diff (`docs/silver-in-dbt.md`, and the phase-2 `compare.py` it inherits) already taught, now
+diff (`docs/learn/02-ingestion.md`, and the phase-2 `compare.py` it inherits) already taught, now
 visible one layer up, in a dimension instead of a current-state table.
 
 ---

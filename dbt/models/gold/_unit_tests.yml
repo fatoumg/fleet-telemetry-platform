@@ -11,23 +11,26 @@ version: 2
 #   NOTHING ELSE ASSERTS A VERSION COUNT. The three singular tests in dbt/tests/ check the grain
 #   (one row per vehicle per valid_from), non-empty intervals, and at most one current version --
 #   and ALL THREE PASS IDENTICALLY WITH SUPPRESSION ON, OFF, OR INVERTED. Deleting
-#   `AND tracked IS DISTINCT FROM prev_tracked` from dim_vehicle.sql takes the dimension from 103
-#   rows to 107, every one of them still uniquely keyed, still non-empty, still one-current-each.
-#   The build stays green and the dimension quietly claims four changes that changed nothing.
+#   `AND tracked IS DISTINCT FROM prev_tracked` from dim_vehicle.sql took the dimension from 103
+#   rows to 107 at the time of writing, every one of them still uniquely keyed, still non-empty,
+#   still one-current-each. The specific counts move as ingestion continues; the mechanism does
+#   not -- removing the predicate always adds back exactly the model's suppressed no-op count. The
+#   build stays green either way, and the dimension quietly claims changes that changed nothing.
 #   These fixtures are the only thing that notices.
 #
 # The third test is here for a bug that was really in the first draft of this model, not for a
 # hypothetical: see dim_vehicle.sql on why a delete has to break the suppression chain.
 #
 # AND THE ARGUMENT ABOVE APPLIES VERBATIM TO dim_driver, which is why the fourth test exists. Its
-# six assertions in dbt/tests/ would all pass with its suppression predicate deleted -- 79 rows
-# would become 91, by the 12 measured no-op driver UPDATEs, every one of them still uniquely keyed
-# and one-current-each. Two models sharing a CTE chain do not share a test: an edit to
-# dim_driver.sql alone was caught by nothing.
+# three assertions in dbt/tests/ would all pass with its suppression predicate deleted -- 79 rows
+# would have become 91 at the time of writing, by the 12 measured no-op driver UPDATEs, every one
+# of them still uniquely keyed and one-current-each. Two models sharing a CTE chain do not share a
+# test: an edit to dim_driver.sql alone was caught by nothing.
 #
 # It is deliberately NOT the vehicle fixture with renamed columns. It exercises phone -- the
 # driver-specific column, genuinely nullable in the OLTP (docker/oltp/init.sql:83), and null on 15
-# of the 79 versions in the built table -- across the boundary that real data has never crossed.
+# of the 79 versions in the built table at the time of writing -- across the boundary that real
+# data has never crossed.
 # Measured on this volume: 0 null-to-value and 0 value-to-null transitions, so the one thing the
 # jsonb comparison is chosen FOR is the one thing Bronze cannot currently demonstrate. That is the
 # original _unit_tests.yml argument, still live, on one column rather than on a whole model.
@@ -370,13 +373,13 @@ unit_tests:
       precisely so that null participates: jsonb_build_object('phone', NULL) yields
       {"phone": null}, and `IS DISTINCT FROM` an object carrying a real number. Written with `<>`
       instead, the comparison would be NULL, the row would be discarded, and the driver would
-      appear to have held this number from creation. Real data cannot catch that today -- phone is
-      null on 15 of 79 versions but measured 0 null-to-value and 0 value-to-null transitions, so
-      the boundary is crossed here and nowhere else.
+      appear to have held this number from creation. Real data cannot catch that today -- phone
+      was null on 15 of 79 versions at the time of writing, but measured 0 null-to-value and 0
+      value-to-null transitions, so the boundary is crossed here and nowhere else.
 
       The third event is the suppression rule on the driver side. Without it dim_driver emits 91
-      rows instead of 79 and all six of its assertions in dbt/tests/ still pass; this fixture is
-      the only thing that notices.
+      rows instead of 79 (at the time of writing) and all three of its assertions in dbt/tests/
+      still pass; this fixture is the only thing that notices.
     given:
       - input: ref('stg_driver_versions')
         format: sql

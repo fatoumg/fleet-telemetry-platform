@@ -52,8 +52,9 @@ version: 2
 #     compare created_at against valid_from to see what happened before CDC started watching, and
 #     a null would make that comparison quietly vacuous rather than wrong.
 #
-# Measured before adding either: 0 nulls in home_depot_id and 0 in created_at, across all 103
-# vehicle and 79 driver versions.
+# Measured at the time of writing, before adding either: 0 nulls in home_depot_id and 0 in
+# created_at, across all 103 vehicle and 79 driver versions then in the table -- a count that moves
+# as the volume ingests continuously, unlike the 0 nulls it reports.
 #
 # The rest of what is asserted here is the bookkeeping this layer invents: the key, the interval
 # start, and the three flags, because those are the columns no upstream model can vouch for.
@@ -67,19 +68,26 @@ models:
       -- docs/source-system-reference.md:259 measured 12 reassignments performed against 8 changed
       rows, and the missing four are intermediate depots no query could reach.
 
-      Measured on this volume: 103 versions across 44 distinct vehicle_ids, of which 40 are
-      current, 14 are the last version before a hard delete, and 40 begin at the Debezium snapshot
-      rather than at a real change. It reconciles: 44 first versions plus 59 LATER versions, from
-      107 non-delete events with 4 no-op UPDATEs suppressed. "Later", not "changes" -- ten of the
-      59 are the first version of a new lifecycle after a hard delete rather than a change to an
-      existing entity, which is the distinction dim_vehicle.sql's `compared` CTE is about.
+      Measured at the time of writing: 103 versions across 44 distinct vehicle_ids, of which 40 are
+      current, fifteen are the last version before a hard delete, and 40 begin at the Debezium
+      snapshot rather than at a real change. This is a reading, not an invariant -- the volume
+      ingests continuously, so the total moves; docs/type-2-dimensions.md carries a fresher one.
+      The reconciliation underneath it is structural and holds at any reading: first versions plus
+      later versions equals the total, and non-delete events minus suppressed no-op UPDATEs equals
+      that same total. At the time of writing that was 44 first versions plus 59 LATER versions
+      (44 + 59 = 103), from 107 non-delete events with 4 no-op UPDATEs suppressed (107 - 4 = 103).
+      "Later", not "changes" -- ten of the 59 are the first version of a new lifecycle after a hard
+      delete rather than a change to an existing entity, which is the distinction dim_vehicle.sql's
+      `compared` CTE is about.
     columns:
       - name: vehicle_id
         description: >
           Half the declared grain -- see
           dbt/tests/assert_dim_vehicle_unique_on_vehicle_and_valid_from.sql. NOT the primary key
           on its own, which is the single most common way a Type 2 dimension is misread: 44 ids
-          hold 103 rows here, and a join on vehicle_id alone fans a fact out across every version.
+          held 103 rows here at the time of writing (the total moves as ingestion continues; the
+          fan-out risk does not), and a join on vehicle_id alone fans a fact out across every
+          version regardless of the count.
         tests: [not_null]
       - name: plate
         description: >
@@ -143,10 +151,11 @@ models:
       - name: valid_from_is_observation_start
         description: >
           True when this version began at the Debezium snapshot (op='r') rather than at an observed
-          change -- 40 of 103 rows. The boundary is FABRICATED on those rows: it records when CDC
-          started watching, not when the vehicle acquired these attributes. Marked rather than
-          hidden, and rather than backdated to created_at, because nothing in Bronze supports the
-          claim that the attributes held from creation onwards.
+          change -- 40 of 103 rows at the time of writing (40 is fixed by the connector's one-time
+          initial snapshot; 103 moves as ingestion continues). The boundary is FABRICATED on those
+          rows: it records when CDC started watching, not when the vehicle acquired these
+          attributes. Marked rather than hidden, and rather than backdated to created_at, because
+          nothing in Bronze supports the claim that the attributes held from creation onwards.
         tests: [not_null]
       - name: source_op
         description: >
@@ -186,12 +195,16 @@ models:
 
       NOT THE EMPTY DIMENSION THE DESIGN EXPECTED. docs/source-system-reference.md section 7
       measured 0 of 40 drivers changed since creation, and the plan for this model expected 40
-      rows, all current, none deleted. Measured now: 79 versions across 43 distinct driver_ids, 40
-      current, 17 closed by a hard delete, 40 beginning at the Debezium snapshot. It reconciles the
-      same way dim_vehicle does -- 43 first versions plus 36 LATER versions, from 91 non-delete
-      events with 12 no-op UPDATEs suppressed. "Later" rather than "changes" for the reason
-      dim_vehicle's block gives, and it bites harder here: 14 of those 36 are post-delete
-      re-creates rather than changes to an existing driver.
+      rows, all current, none deleted. Measured at the time of writing: 79 versions across 43
+      distinct driver_ids, 40 current, 17 closed by a hard delete, 40 beginning at the Debezium
+      snapshot. This is a reading, not an invariant -- the volume ingests continuously, so the
+      total moves; docs/type-2-dimensions.md carries a fresher one. It reconciles the same way
+      dim_vehicle does, and the identity holds at any reading: first versions plus later versions
+      equals the total, and non-delete events minus suppressed no-op UPDATEs equals that same
+      total. At the time of writing that was 43 first versions plus 36 LATER versions
+      (43 + 36 = 79), from 91 non-delete events with 12 no-op UPDATEs suppressed (91 - 12 = 79).
+      "Later" rather than "changes" for the reason dim_vehicle's block gives, and it bites harder
+      here: 14 of those 36 are post-delete re-creates rather than changes to an existing driver.
 
       The churn is the integration suite, not the fleet: the simulator never revises a driver once
       seeded, and tests/test_app.py patches and hard-deletes disposable test drivers on every run.
@@ -201,8 +214,10 @@ models:
       - name: driver_id
         description: >
           Half the declared grain -- see
-          dbt/tests/assert_dim_driver_unique_on_driver_and_valid_from.sql. 43 ids hold 79 rows, so
-          a join on driver_id alone fans a fact out across every version of the driver.
+          dbt/tests/assert_dim_driver_unique_on_driver_and_valid_from.sql. 43 ids held 79 rows here
+          at the time of writing (the total moves as ingestion continues; the fan-out risk does
+          not), so a join on driver_id alone fans a fact out across every version of the driver
+          regardless of the count.
         tests: [not_null]
       - name: full_name
         description: >
@@ -211,8 +226,9 @@ models:
       - name: phone
         description: >
           Nullable in the OLTP (docker/oltp/init.sql:83) and NO LONGER 0% NULL as phase 1 measured:
-          15 of the 79 versions here carry a null phone, all of them driver 9401, whose test
-          fixture inserts no phone number. Tracked, and null is a distinct tracked value -- 6
+          15 of the 79 versions here carried a null phone at the time of writing, all of them
+          driver 9401, whose test fixture inserts no phone number -- both counts move as the test
+          suite and the volume keep running. Tracked, and null is a distinct tracked value -- 6
           versions exist because the phone changed and nothing else did. See dim_driver.sql on why
           the jsonb comparison is what makes the null boundary work, and why that boundary is still
           unexercised (0 null-to-value and 0 value-to-null transitions measured).
@@ -246,8 +262,9 @@ models:
       - name: is_current
         description: >
           True when valid_to is null. False on the final version of a deleted driver: 17 of the 79
-          versions here were closed by a hard delete, which is what makes this dimension
-          non-trivial where the design expected it to be empty.
+          versions here were closed by a hard delete at the time of writing -- both counts move as
+          the volume ingests -- which is what makes this dimension non-trivial where the design
+          expected it to be empty.
         tests: [not_null]
       - name: is_deleted
         description: >
@@ -257,8 +274,9 @@ models:
       - name: valid_from_is_observation_start
         description: >
           True when this version began at the Debezium snapshot (op='r') rather than at an observed
-          change -- 40 of 79 rows. A fabricated boundary, marked rather than hidden; see
-          dim_vehicle.valid_from_is_observation_start.
+          change -- 40 of 79 rows at the time of writing (40 is fixed by the connector's one-time
+          initial snapshot; 79 moves as ingestion continues). A fabricated boundary, marked rather
+          than hidden; see dim_vehicle.valid_from_is_observation_start.
         tests: [not_null]
       - name: source_op
         description: >

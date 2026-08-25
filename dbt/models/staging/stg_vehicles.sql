@@ -3,8 +3,9 @@
 -- --------------------------------------------------------------------------------------
 --
 -- Reads:  bronze.raw_cdc_entities WHERE source_table = 'vehicles'
--- Feeds:  nothing in dbt yet. silver_manual.vehicle_day reads the hand-written twin; moving
---         that model to Gold is a separate ticket.
+-- Feeds:  dbt/snapshots/snap_vehicles.sql, which polls this model as the naive-comparison baseline
+--         for gold.dim_vehicle (docs/type-2-dimensions.md). silver_manual.vehicle_day also reads
+--         the hand-written twin of this model; moving that model to Gold is a separate ticket.
 --
 -- Ported from sql/silver/20_stg_vehicles.sql. THE REASONING FOR ALL FOUR CDC ENTITY MODELS LIVES
 -- HERE; stg_depots, stg_drivers and stg_jobs point back at this file rather than repeating it.

@@ -18,9 +18,11 @@
 --    current, none deleted -- a Type 2 dimension sitting next to one that earns its keep, showing
 --    what the machinery costs when there is no history to capture. That was true in phase 1:
 --    docs/source-system-reference.md section 7 measured 0 of 40 drivers changed since creation,
---    and the simulator still never revises a driver once seeded. Measured now: 79 versions across
---    43 distinct driver_ids, 40 current, 17 closed by a hard delete, 12 no-op UPDATEs suppressed.
---    The history is real but its source is the integration suite, not the domain --
+--    and the simulator still never revises a driver once seeded. Measured at the time of writing:
+--    79 versions across 43 distinct driver_ids, 40 current, 17 closed by a hard delete, 12 no-op
+--    UPDATEs suppressed -- a reading, not an invariant. The volume ingests continuously, so these
+--    counts move; docs/type-2-dimensions.md carries a fresher one. The history is real but its
+--    source is the integration suite, not the domain --
 --    tests/test_app.py patches status and phone on TEST_DRIVER_IDS and hard-deletes them in
 --    teardown. Worth writing down rather than quietly reporting a number: this dimension has
 --    history because the tests churn, and a reader comparing it to the design spec would
@@ -34,8 +36,9 @@
 --
 -- 3. phone IS TRACKED, AND NULL IS A DISTINCT TRACKED VALUE. It is nullable in the OLTP
 --    (docker/oltp/init.sql:83) and no longer 0% null as phase 1 measured: 15 of the 79 versions
---    here carry a null phone, all of them driver 9401, whose fixture inserts no phone number at
---    all. 6 versions exist because the phone changed and nothing else did. What has NOT happened
+--    here carry a null phone at the time of writing, all of them driver 9401, whose fixture
+--    inserts no phone number at all -- both counts move as the test suite and the volume keep
+--    running. 6 versions exist because the phone changed and nothing else did. What has NOT happened
 --    yet is a transition ACROSS the null boundary -- measured 0 null-to-value and 0 value-to-null
 --    -- which is exactly why the comparison is jsonb rather than a chain of `<>`:
 --    jsonb_build_object('phone', NULL) yields {"phone": null}, which IS DISTINCT FROM an object
@@ -43,6 +46,18 @@
 --    first time it happens rather than being silently swallowed. Kept cast-free rather than
 --    coalesced to '', matching stg_drivers.sql:12-14 -- an absent phone number and an empty one
 --    are different facts and only one of them is true.
+--
+-- 4. DUPLICATING dim_vehicle.sql's CTE CHAIN HERE, RATHER THAN SHARING IT, IS A DECISION, NOT AN
+--    OVERSIGHT. cdc.sql was extracted from the staging models when a real divergence forced it --
+--    stg_vehicle_versions and stg_driver_versions need the `usable` half of that scaffolding
+--    without the `latest` half, so the two CTEs it used to be one block copied whole had to
+--    become independently-chosen pieces. Two still-identical Gold models is exactly the state
+--    that argument calls premature: nothing here needs part of this chain without the rest of it.
+--    A macro would also hide the single most important question a reader asks of a Type 2
+--    dimension -- "what does this one track?" -- behind a parameter. What would reopen this: a
+--    third Type 2 dimension, which turns "duplicated twice" into "duplicated three times and
+--    counting", or the first time a change is needed in both files and one of them is missed --
+--    either is the signal that divergence, not repetition, has actually arrived.
 
 WITH events AS (
     SELECT * FROM {{ ref('stg_driver_versions') }}
