@@ -270,7 +270,8 @@ unit_tests:
       two ids carry six delete events each -- twelve lifecycles between them, ten of which begin
       AFTER a delete of the same id. Because each re-create repeats the previous fixture's plate,
       capacity, status and depot, the suppression rule saw no change and discarded five of the six
-      lifecycles per id -- 103 versions became 93, and every test still passed.
+      lifecycles per id -- ten lifecycles lost, which at the time of writing was 103 versions
+      becoming 93 -- and every test still passed.
 
       The fix, and what this fixture asserts: tracked is NULL on a delete row and the window runs
       over ALL events, so the re-create compares against NULL, is distinct from it, and survives.

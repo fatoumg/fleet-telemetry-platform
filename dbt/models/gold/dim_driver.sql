@@ -12,7 +12,7 @@
 -- suppression chain rather than being excluded from the window. The precedent for a header that
 -- points rather than repeats is stg_drivers.sql:8-10.
 --
--- THREE THINGS ARE DRIVER-SPECIFIC.
+-- FOUR THINGS ARE DRIVER-SPECIFIC.
 --
 -- 1. THIS IS NOT THE EMPTY DIMENSION IT WAS SPECIFIED AS. The design expected 40 rows, all
 --    current, none deleted -- a Type 2 dimension sitting next to one that earns its keep, showing

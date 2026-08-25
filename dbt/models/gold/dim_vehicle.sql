@@ -77,7 +77,9 @@ compared AS (
     -- delete events EACH -- twelve lifecycles between them, ten of which begin after a delete of
     -- the same id. Each re-create repeats the previous fixture's plate, capacity, status and
     -- depot, so with the delete excluded from this window the comparison below saw no change and
-    -- discarded five of the six lifecycles per id. 103 versions became 93, silently, and every
+    -- discarded five of the six lifecycles per id -- ten lifecycles lost, which is the durable
+    -- figure here because it is set by the fixtures rather than by how long the volume has been
+    -- ingesting. Measured at the time of writing, that was 103 versions becoming 93. Silently, and every
     -- test in the project still passed.
     --
     -- Excluding the delete row from the OUTPUT is right; excluding it from the ORDERING is what
