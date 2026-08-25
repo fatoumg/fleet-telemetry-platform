@@ -22,6 +22,7 @@ lists them so they are not mistaken for entries in this register.
 | 7 | Debezium connects as the table owner | low here, ships badly | open |
 | 8 | Misconfigured tooling in tracked files: `PostToolUse` hooks, and a `.gitignore` typo that made CI uneditable | low — noise, and one blocked edit | hooks open; `.gitignore` **fixed** |
 | 9 | `writer.py` claims to be the only writer of `bronze.*`, and is not | low — doc claim was wrong | **fixed** |
+| 12 | 20,530 ping events permanently lost while the CDC consumer was down | **high** — unrecoverable data loss | data unrecoverable; operational rule is the fix |
 
 ---
 
@@ -467,3 +468,69 @@ Not defects; loose ends that will be harder to reconstruct later.
 - An open question deferred with the poller: whether `capture_run_stats.cycles` should be `units`,
   so the same column can count polls and Kafka batches. Deferred until the CDC consumer's stats
   shape is settled.
+
+---
+
+## 12. 20,530 ping events permanently lost while the CDC consumer was down
+
+**Symptom.** `bronze.raw_ping_events` holds Kafka offsets 0 through 377,251 contiguously, then
+jumps straight to 397,782. One gap, exactly:
+
+```text
+397,782 - 377,251 - 1 = 20,530 missing offsets
+```
+
+**Cause.** The CDC consumer (`fleet_telemetry.ingest.consumer`, consumer group `bronze-loader`)
+stopped advancing at offset 377,251 on 2026-08-24 and did not restart for roughly 15 hours.
+Redpanda's topic retention trimmed offsets 377,252 through 397,781 off the front of the log before
+the consumer came back. Confirmed directly:
+
+```text
+$ rpk group describe bronze-loader
+TOPIC          PARTITION  LOG-START-OFFSET  ...
+fleet.public.pings  0     397782             ...
+```
+
+`LOG-START-OFFSET` had already moved to 397,782 by the time the consumer resumed — the messages
+the consumer needed next did not merely arrive late, they had already been deleted. This is
+`CLAUDE.md`'s own warning arriving as measured fact: *"Bronze is not optional. A Kafka topic has a
+retention window, not a memory."* A topic's retention window is a promise about how long **unread**
+messages survive, not about how long a stopped consumer gets to catch up — and this consumer was
+stopped for longer than that promise covers.
+
+**Cost.** Those rows exist in the OLTP (563,102 pings, measured) and will never reach Bronze
+(543,288, measured) — two separate totals, not meant to net to exactly the 20,530-row gap above,
+since both systems keep taking on new pings continuously and each count is a snapshot of a moving
+target. They are gone from the durable record permanently: Bronze has no earlier copy to
+re-read, and the OLTP is not the system of record for history — it is current-state-plus-recent,
+not an archive. No dbt model, no re-run of `consumer.py`, and no amount of downstream
+reprocessing can recover them. Any Silver/Gold aggregate covering that window (2026-08-24, the
+outage period) is built on a base that is missing rows, permanently, and nothing in the pipeline
+flags which rows those were — the loss is a hole with no label on it.
+
+**What was NOT affected, and this matters for trusting the rest of this ticket.**
+`bronze.raw_cdc_entities` for vehicles holds offsets 0 through 143 — 144 rows, contiguous, zero
+missing. The four entity streams (`vehicles`, `depots`, `drivers`, `jobs`) that
+[`type-2-dimensions.md`](type-2-dimensions.md) is built from were not touched by this outage: their
+volume is low enough, and the consumer's downtime happened to fall in a window where nothing on
+those streams needed to be read past the point retention trimmed. So `dim_vehicle` and
+`dim_driver` are complete on this volume — this incident cost ping history, not the Type 2
+dimensions this ticket delivers.
+
+**Severity: high.** This is not a near-miss or a theoretical hazard like §5's unattended
+replication slot — it is realized, permanent, unrecoverable loss of primary telemetry data, in the
+stream this whole project's central lateness problem is about.
+
+**Status.** The data itself is unrecoverable; there is nothing to "fix" in the sense of getting
+those 20,530 rows back. What is actionable is the operational rule the incident argues for:
+
+- The CDC consumer needs to be a supervised, always-running process (the phase 4 argument
+  `known-issues.md` §5 already makes for the replication slot applies identically here — the
+  failure mode is the same shape, a piece of live state that only survives while something keeps
+  draining it).
+- Topic retention should be sized against **measured worst-case consumer downtime**, not against an
+  optimistic assumption that the consumer is always close to caught up. A retention window long
+  enough to survive a multi-hour outage costs disk; a retention window that does not is a bet that
+  this incident lost.
+- A monitoring signal on `LOG-START-OFFSET` vs. the consumer's committed offset would have caught
+  this while some of the window was still recoverable, rather than after.
