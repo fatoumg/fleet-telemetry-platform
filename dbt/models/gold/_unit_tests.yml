@@ -18,6 +18,19 @@ version: 2
 #
 # The third test is here for a bug that was really in the first draft of this model, not for a
 # hypothetical: see dim_vehicle.sql on why a delete has to break the suppression chain.
+#
+# AND THE ARGUMENT ABOVE APPLIES VERBATIM TO dim_driver, which is why the fourth test exists. Its
+# six assertions in dbt/tests/ would all pass with its suppression predicate deleted -- 79 rows
+# would become 91, by the 12 measured no-op driver UPDATEs, every one of them still uniquely keyed
+# and one-current-each. Two models sharing a CTE chain do not share a test: an edit to
+# dim_driver.sql alone was caught by nothing.
+#
+# It is deliberately NOT the vehicle fixture with renamed columns. It exercises phone -- the
+# driver-specific column, genuinely nullable in the OLTP (docker/oltp/init.sql:83), and null on 15
+# of the 79 versions in the built table -- across the boundary that real data has never crossed.
+# Measured on this volume: 0 null-to-value and 0 value-to-null transitions, so the one thing the
+# jsonb comparison is chosen FOR is the one thing Bronze cannot currently demonstrate. That is the
+# original _unit_tests.yml argument, still live, on one column rather than on a whole model.
 
 unit_tests:
   # Names kept short on purpose: dbt materialises a unit test as a relation, so the name is
@@ -344,3 +357,107 @@ unit_tests:
                1786705200000::bigint,
                0::integer,
                100::bigint
+
+  - name: dim_driver_versions_a_phone_change_not_a_no_op
+    model: dim_driver
+    description: >
+      Three events for one driver: a create with NO phone number, an UPDATE that supplies one, and
+      an UPDATE that moves only updated_at. Two versions must come out, not three and not one.
+
+      TWO ASSERTIONS IN ONE FIXTURE, because they are the two halves of the same rule.
+
+      Acquiring a phone number IS a change. The comparison is jsonb rather than a chain of `<>`
+      precisely so that null participates: jsonb_build_object('phone', NULL) yields
+      {"phone": null}, and `IS DISTINCT FROM` an object carrying a real number. Written with `<>`
+      instead, the comparison would be NULL, the row would be discarded, and the driver would
+      appear to have held this number from creation. Real data cannot catch that today -- phone is
+      null on 15 of 79 versions but measured 0 null-to-value and 0 value-to-null transitions, so
+      the boundary is crossed here and nowhere else.
+
+      The third event is the suppression rule on the driver side. Without it dim_driver emits 91
+      rows instead of 79 and all six of its assertions in dbt/tests/ still pass; this fixture is
+      the only thing that notices.
+    given:
+      - input: ref('stg_driver_versions')
+        format: sql
+        rows: |
+          SELECT 9002::integer AS driver_id,
+                 'Awa Ceesay'::text AS full_name,
+                 -- No phone number on creation. An ABSENT number, not an empty one -- the
+                 -- distinction stg_drivers.sql:12-14 refuses to collapse by coalescing to ''.
+                 NULL::text AS phone,
+                 'active'::text AS status,
+                 1::integer AS home_depot_id,
+                 '2026-08-01T08:00:00Z'::timestamptz AS created_at,
+                 '2026-08-14T09:00:00Z'::timestamptz AS updated_at,
+                 'c'::text AS bronze_op,
+                 1786698000000::bigint AS source_ts_ms,
+                 '2026-08-14T09:00:00Z'::timestamptz AS committed_at,
+                 0::integer AS bronze_partition,
+                 110::bigint AS bronze_offset
+          UNION ALL
+          -- The number arrives. NULL -> value is the transition Bronze has never contained.
+          SELECT 9002::integer,
+                 'Awa Ceesay'::text,
+                 '+2207654321'::text,
+                 'active'::text,
+                 1::integer,
+                 '2026-08-01T08:00:00Z'::timestamptz,
+                 '2026-08-14T10:00:00Z'::timestamptz,
+                 'u'::text,
+                 1786701600000::bigint,
+                 '2026-08-14T10:00:00Z'::timestamptz,
+                 0::integer,
+                 120::bigint
+          UNION ALL
+          -- updated_at only. Same name, same number, same status, same depot.
+          SELECT 9002::integer,
+                 'Awa Ceesay'::text,
+                 '+2207654321'::text,
+                 'active'::text,
+                 1::integer,
+                 '2026-08-01T08:00:00Z'::timestamptz,
+                 '2026-08-14T11:00:00Z'::timestamptz,
+                 'u'::text,
+                 1786705200000::bigint,
+                 '2026-08-14T11:00:00Z'::timestamptz,
+                 0::integer,
+                 130::bigint
+    expect:
+      format: sql
+      rows: |
+        SELECT 9002::integer AS driver_id,
+               'Awa Ceesay'::text AS full_name,
+               -- The phoneless version SURVIVES. Under a `<>` comparison this row is the one that
+               -- disappears, and its disappearance is invisible in every aggregate.
+               NULL::text AS phone,
+               'active'::text AS status,
+               1::integer AS home_depot_id,
+               '2026-08-01T08:00:00Z'::timestamptz AS created_at,
+               '2026-08-14T09:00:00Z'::timestamptz AS valid_from,
+               '2026-08-14T10:00:00Z'::timestamptz AS valid_to,
+               false AS is_current,
+               false AS is_deleted,
+               false AS valid_from_is_observation_start,
+               'c'::text AS source_op,
+               1786698000000::bigint AS source_ts_ms,
+               0::integer AS bronze_partition,
+               110::bigint AS bronze_offset
+        UNION ALL
+        -- Open-ended: the no-op UPDATE at 11:00 must not close this interval, and must not open
+        -- one of its own.
+        SELECT 9002::integer,
+               'Awa Ceesay'::text,
+               '+2207654321'::text,
+               'active'::text,
+               1::integer,
+               '2026-08-01T08:00:00Z'::timestamptz,
+               '2026-08-14T10:00:00Z'::timestamptz,
+               NULL::timestamptz,
+               true,
+               false,
+               false,
+               'u'::text,
+               1786701600000::bigint,
+               0::integer,
+               120::bigint

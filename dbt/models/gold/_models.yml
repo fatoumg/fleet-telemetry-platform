@@ -28,13 +28,34 @@ version: 2
 # incremental_lookback_days, which MUST exceed lateness_bound_hours -- and not a longer interval
 # between full rebuilds.
 #
-# WHY not_null IS ABSENT FROM valid_to AND FROM THE ATTRIBUTE COLUMNS. valid_to is null on exactly
-# the current version of every live entity, and that null is the meaning of "still valid" -- a
-# not_null test there would fail on every correct build. The attribute columns (plate, capacity,
-# full_name, ...) are NOT NULL in the OLTP and are non-null here too, because the delete rows that
-# carry no after-image are filtered out of both models; the constraint is asserted once, on the
-# current-state twins in staging/_models.yml, rather than restated at every layer that happens to
-# preserve it. What IS asserted here is the bookkeeping this layer invents: the key, the interval
+# WHY not_null IS ABSENT FROM valid_to. It is null on exactly the current version of every live
+# entity, and that null is the meaning of "still valid" -- a not_null test there would fail on
+# every correct build.
+#
+# WHERE THE ATTRIBUTE COLUMNS' NOT NULL IS ASSERTED, WHICH IS NOT ONE PLACE. Every attribute
+# projected here is NOT NULL in the OLTP and non-null in these models, because the delete rows that
+# carry no after-image are filtered out. But the staging layer does not assert all of them, so
+# "asserted once upstream" would be a comfortable sentence that is false for two columns:
+#
+#   - plate, capacity, status, full_name ARE asserted on the current-state twins
+#     (staging/_models.yml, stg_vehicles and stg_drivers). Not restated here -- one assertion of
+#     one property, at the layer that first types it.
+#   - home_depot_id is asserted NOWHERE ELSE. Both twins say "NOT NULL in the OLTP ... No not_null
+#     test here anyway" (staging/_models.yml:138-141 and :281-284), and the version models
+#     deliberately cannot assert it, because their delete rows carry a null in it by design. GOLD
+#     IS THE ONLY LAYER WHERE THIS CONSTRAINT CAN BE ASSERTED AT ALL -- filtering deletes out is
+#     what makes it bind again -- so it is asserted here. It is also the column dim_vehicle exists
+#     for, which makes leaving it unchecked the least defensible omission available.
+#   - created_at has no twin to have asserted it: stg_vehicles and stg_drivers project it but
+#     staging/_models.yml gives it no column entry, so nothing tests it anywhere. Asserted here for
+#     the same reason, plus one specific to this layer -- both model headers invite a reader to
+#     compare created_at against valid_from to see what happened before CDC started watching, and
+#     a null would make that comparison quietly vacuous rather than wrong.
+#
+# Measured before adding either: 0 nulls in home_depot_id and 0 in created_at, across all 103
+# vehicle and 79 driver versions.
+#
+# The rest of what is asserted here is the bookkeeping this layer invents: the key, the interval
 # start, and the three flags, because those are the columns no upstream model can vouch for.
 
 models:
@@ -48,8 +69,10 @@ models:
 
       Measured on this volume: 103 versions across 44 distinct vehicle_ids, of which 40 are
       current, 14 are the last version before a hard delete, and 40 begin at the Debezium snapshot
-      rather than at a real change. It reconciles: 44 first versions plus 59 real changes, from 107
-      non-delete events with 4 no-op UPDATEs suppressed.
+      rather than at a real change. It reconciles: 44 first versions plus 59 LATER versions, from
+      107 non-delete events with 4 no-op UPDATEs suppressed. "Later", not "changes" -- ten of the
+      59 are the first version of a new lifecycle after a hard delete rather than a change to an
+      existing entity, which is the distinction dim_vehicle.sql's `compared` CTE is about.
     columns:
       - name: vehicle_id
         description: >
@@ -76,13 +99,20 @@ models:
         description: >
           THE COLUMN THIS TICKET EXISTS FOR. NOT NULL in the OLTP
           (docker/oltp/init.sql:105). Its history is what current state destroyed.
+
+          not_null IS ASSERTED HERE AND NOWHERE ELSE IN THE PROJECT -- see the file header.
+          stg_vehicles declines it, stg_vehicle_versions cannot make it (its delete rows carry a
+          null by design), and Gold's delete filter is what makes the OLTP constraint bind again.
+        tests: [not_null]
       - name: created_at
         description: >
           When the OLTP row was created -- a property of the vehicle, repeated on every version of
           it, and NOT the start of the first interval. Kept alongside valid_from precisely so the
           two can be compared: where they differ on a version flagged
           valid_from_is_observation_start, the difference is everything that happened before CDC
-          started watching.
+          started watching. That comparison is why the not_null matters rather than being
+          bookkeeping: a null here would make it silently vacuous instead of visibly wrong.
+        tests: [not_null]
       - name: valid_from
         description: >
           Inclusive start of this version's validity, from the WAL commit time of the event that
@@ -158,8 +188,10 @@ models:
       measured 0 of 40 drivers changed since creation, and the plan for this model expected 40
       rows, all current, none deleted. Measured now: 79 versions across 43 distinct driver_ids, 40
       current, 17 closed by a hard delete, 40 beginning at the Debezium snapshot. It reconciles the
-      same way dim_vehicle does -- 43 first versions plus 36 real changes, from 91 non-delete
-      events with 12 no-op UPDATEs suppressed.
+      same way dim_vehicle does -- 43 first versions plus 36 LATER versions, from 91 non-delete
+      events with 12 no-op UPDATEs suppressed. "Later" rather than "changes" for the reason
+      dim_vehicle's block gives, and it bites harder here: 14 of those 36 are post-delete
+      re-creates rather than changes to an existing driver.
 
       The churn is the integration suite, not the fleet: the simulator never revises a driver once
       seeded, and tests/test_app.py patches and hard-deletes disposable test drivers on every run.
@@ -188,13 +220,20 @@ models:
         description: Operational status as of this interval. Same reasoning as full_name.
       - name: home_depot_id
         description: >
-          Which depot the driver is attached to as of this interval. No relationships test to
-          dim_depot -- there is no dim_depot yet, and see the file header for why there would not
-          be a test even once there is.
+          Which depot the driver is attached to as of this interval. NOT NULL in the OLTP
+          (docker/oltp/init.sql:86), and asserted here for the same reason as
+          dim_vehicle.home_depot_id -- staging/_models.yml:281-284 declines it explicitly and
+          stg_driver_versions cannot make it, so this is the only layer that can.
+
+          No relationships test to dim_depot -- there is no dim_depot yet, and see the file header
+          for why there would not be one even once there is.
+        tests: [not_null]
       - name: created_at
         description: >
           When the OLTP row was created. A property of the driver, repeated on every version, and
-          NOT the start of the first interval -- see dim_vehicle.created_at.
+          NOT the start of the first interval -- see dim_vehicle.created_at, including why the
+          not_null is load-bearing rather than bookkeeping.
+        tests: [not_null]
       - name: valid_from
         description: >
           Inclusive start of this version's validity, from the WAL commit time of the event that
