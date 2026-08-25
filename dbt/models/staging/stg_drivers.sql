@@ -3,42 +3,35 @@
 -- --------------------------------------------------------------------------------------
 --
 -- Reads:  bronze.raw_cdc_entities WHERE source_table = 'drivers'
--- Feeds:  nothing yet. Modelled because the entity exists, not because a consumer asked.
+-- Feeds:  dbt/snapshots/snap_drivers.sql, which polls this model as the naive-comparison baseline
+--         for gold.dim_driver (docs/type-2-dimensions.md).
 --
 -- Ported from sql/silver/22_stg_drivers.sql. Same shape as stg_vehicles.sql; the reasoning about
--- latest-wins, the source_ts_ms::bigint cast, the before-image caveat and why there is no macro
--- all lives there.
+-- latest-wins, the source_ts_ms::bigint cast and the before-image caveat now lives in the shared
+-- scaffolding macro, dbt/macros/cdc.sql, which both this model and stg_vehicles.sql call.
 --
--- `phone` is nullable in the OLTP and measured 0% null, so nothing in phase 1 exercises the null
--- path. Kept as a plain cast-free text column rather than coalesced to '': an absent phone
--- number and an empty phone number are different facts, and only one of them is true.
+-- `phone` is nullable in the OLTP and measured 0% null in current state -- not because no driver
+-- has ever gone without one, but because the one driver whose fixture leaves it null (9401, see
+-- stg_driver_versions.sql) is hard-deleted as of this writing, so it holds no row here to carry
+-- the null forward. Kept as a plain cast-free text column rather than coalesced to '': an absent
+-- phone number and an empty phone number are different facts, and only one of them is true.
 --
 -- Worth knowing while reading this: the profiler measured drivers as 0 of 40 rows changed since
--- creation (docs/source-system-reference.md, section 7). The table is currently a copy of the
--- snapshot. That is a fact about the simulator's behaviour, not about the model -- and it means
--- the latest-wins rule below is, like the ping deduplication, currently unexercised by real
--- data. Unlike the ping rule, no unit test pins it yet; it would need one before anything
--- downstream depends on version ordering.
+-- creation (docs/source-system-reference.md, section 7) -- true in phase 1, when there was no
+-- change stream to exercise latest-wins at all. It is no longer true of this table as a whole:
+-- see stg_driver_versions.sql, which measures the churn the integration suite now produces (17 c,
+-- 34 u, 17 d, 40 r events against Bronze). It remains true of the original 40 fleet-seeded
+-- drivers -- the churn is confined to the high-id test fixtures, which is why latest-wins is now
+-- exercised by real data without the fleet itself having changed at all. Unlike the ping rule, no
+-- unit test pins this model's latest-wins choice yet -- it would need one now that real data
+-- exercises it, more than it did when the rule was still a hypothetical.
 
 WITH usable AS (
-    SELECT *,
-           coalesce(
-               payload #>> '{after,driver_id}',
-               payload #>> '{before,driver_id}'
-           ) AS entity_key
-      FROM {{ source('bronze', 'raw_cdc_entities') }}
-     WHERE source_table = 'drivers'
-       AND parse_error IS NULL
+    {{ cdc_usable('drivers', 'driver_id') }}
 ),
 
 latest AS (
-    SELECT DISTINCT ON (entity_key) *
-      FROM usable
-     WHERE entity_key IS NOT NULL
-     ORDER BY entity_key,
-              source_ts_ms::bigint DESC,
-              _kafka_partition DESC,
-              _kafka_offset DESC
+    {{ cdc_latest() }}
 )
 
 SELECT

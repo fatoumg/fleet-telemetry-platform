@@ -10,7 +10,7 @@
 --   would sanity-check moves together and therefore still looks plausible.
 --
 -- That is the bug class the design removed from the original mart, and this test is what stops it
--- coming back. It is +severity: error project-wide (dbt/dbt_project.yml:38-40) for exactly that
+-- coming back. It is +severity: error project-wide (dbt/dbt_project.yml:44-46) for exactly that
 -- reason: a warning here would be a log line under a report nobody knows is wrong.
 --
 -- WHY THIS CANNOT USE THE BUILT-IN `unique`. The grain is composite. dbt's `unique` takes one

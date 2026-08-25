@@ -19,7 +19,7 @@ version: 2
 # judgement, and judgements are Gold's. At `+severity: error` project-wide, adding them would
 # break the build to report something the design already decided.
 #
-# Everything below is +severity: error via dbt_project.yml:38-40. A failing test blocks the build
+# Everything below is +severity: error via dbt_project.yml:44-46. A failing test blocks the build
 # rather than warning into a log nobody reads.
 
 models:
@@ -136,7 +136,9 @@ models:
           Nullable and reassignable in the OLTP (docker/oltp/init.sql:102-103), measured 0% null.
           No not_null test, and no relationships test -- see the file header.
       - name: home_depot_id
-        description: Nullable in the OLTP. No relationships test -- see the file header.
+        description: >
+          NOT NULL in the OLTP (docker/oltp/init.sql:105). No not_null test here anyway, and no
+          relationships test -- see the file header.
       - name: bronze_op
         description: >
           c, u or r. d is excluded by the model's WHERE op <> 'd', which is what makes a deleted
@@ -150,6 +152,78 @@ models:
           OLTP commit time from the WAL, cast to bigint. Text in Bronze, and the cast matters:
           text ordering puts '9' after '10', so sorting a 13-digit epoch as text is wrong whenever
           the digit count changes. This is the column the latest-wins rule orders on.
+        tests: [not_null]
+
+  # ------------------------------------------------------------------------------------
+  - name: stg_vehicle_versions
+    description: >
+      One row per vehicle CHANGE EVENT, not per vehicle -- the same Bronze rows as stg_vehicles,
+      without the DISTINCT ON that collapses them to current state. Answers "what has ever been
+      true of vehicle 17" rather than only "what is true of it now", and keeps DELETE rows that
+      stg_vehicles excludes: a delete is not a version, but it is the event that ends the previous
+      one. Feeds gold.dim_vehicle, which turns these rows into validity intervals -- that judgement,
+      and every other one, belongs to Gold rather than here.
+    columns:
+      - name: vehicle_id
+        description: >
+          The entity this event describes, not the declared grain -- see
+          dbt/tests/assert_stg_vehicle_versions_unique_on_kafka_coordinate.sql for that. NOT NULL
+          because the model filters entity_key IS NOT NULL upstream, so every row here is
+          attributable to a vehicle even when the row is a delete.
+        tests: [not_null]
+      - name: plate
+        description: >
+          From the after-image. NULL on a delete row, BY DESIGN -- a delete has no after-image, and
+          that null is what makes it impossible to mistake for a version in which the plate became
+          unknown. No not_null test, unlike stg_vehicles: the OLTP's NOT NULL constraint binds a
+          live row, and this model deliberately keeps rows that describe none.
+      - name: capacity
+        description: Same reasoning as plate -- null on a delete row, by design.
+      - name: status
+        description: Same reasoning as plate -- null on a delete row, by design.
+      - name: current_driver_id
+        description: >
+          Nullable and reassignable even on a live row (docker/oltp/init.sql:102-103); also null on
+          a delete row like every other attribute above.
+      - name: home_depot_id
+        description: >
+          NOT NULL in the OLTP (docker/oltp/init.sql:105). No not_null test here, unlike
+          stg_vehicles: the OLTP's NOT NULL constraint binds a live row, and this model
+          deliberately keeps rows -- deletes -- that describe none.
+      - name: created_at
+        description: From the after-image. Null on a delete row like every other attribute above.
+      - name: updated_at
+        description: From the after-image. Null on a delete row like every other attribute above.
+      - name: bronze_op
+        description: >
+          c, u, d OR r -- all four, unlike stg_vehicles' ['c', 'u', 'r']. Keeping d is the point of
+          this model: it carries no attributes, but it is the event that closes the previous
+          version, and dropping it here would make that unrecoverable in Gold.
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['c', 'u', 'd', 'r']
+      - name: source_ts_ms
+        description: >
+          OLTP commit time from the WAL, cast to bigint. What the ordering and the tie-break use --
+          integers compare exactly, which is why this is projected alongside committed_at rather
+          than instead of it.
+        tests: [not_null]
+      - name: committed_at
+        description: >
+          source_ts_ms, rendered as a timestamptz. What a validity range must be expressed in -- a
+          bigint epoch is not a point in time to anyone reading a dimension.
+        tests: [not_null]
+      - name: bronze_partition
+        description: >
+          Half the declared grain -- see
+          dbt/tests/assert_stg_vehicle_versions_unique_on_kafka_coordinate.sql for why partition
+          and offset suffice without _topic.
+        tests: [not_null]
+      - name: bronze_offset
+        description: >
+          The other half of the declared grain, and the column both reconciliation tests bound on
+          so a continuously-ingesting simulator cannot make them flap.
         tests: [not_null]
 
   # ------------------------------------------------------------------------------------
@@ -188,9 +262,13 @@ models:
   # ------------------------------------------------------------------------------------
   - name: stg_drivers
     description: >
-      One row per driver_id, current state. Measured 0 of 40 rows changed since creation, so the
-      latest-wins rule has never had to choose between two versions -- the same blind spot the ping
-      deduplication had before a unit test existed.
+      One row per driver_id, current state. docs/source-system-reference.md section 7 measured 0
+      of 40 drivers changed since creation, in phase 1, before any change stream existed to
+      exercise latest-wins at all. That remains true of the original 40 fleet-seeded drivers; it
+      is no longer true of this table as a whole, now that the integration suite's high-id test
+      drivers churn on every run -- see stg_driver_versions for the measured churn, and note the
+      same blind spot the ping deduplication had before a unit test existed still applies here:
+      latest-wins is exercised by real data now, but no unit test pins it.
     columns:
       - name: driver_id
         description: The declared grain.
@@ -199,19 +277,78 @@ models:
         tests: [not_null]
       - name: phone
         description: >
-          Nullable in the OLTP and measured 0% null. Kept cast-free rather than coalesced to '':
-          an absent phone number and an empty phone number are different facts, and only one of
-          them is true.
+          Nullable in the OLTP and measured 0% null in current state -- the one driver whose
+          fixture leaves it null (9401) is hard-deleted as of this writing, so this current-state
+          model never sees the null; stg_driver_versions does. Kept cast-free rather than
+          coalesced to '': an absent phone number and an empty phone number are different facts,
+          and only one of them is true.
       - name: status
         tests: [not_null]
       - name: home_depot_id
-        description: Nullable. No relationships test -- see the file header.
+        description: >
+          NOT NULL in the OLTP (docker/oltp/init.sql:86). No not_null test here anyway, and no
+          relationships test -- see the file header.
       - name: bronze_op
         tests:
           - accepted_values:
               arguments:
                 values: ['c', 'u', 'r']
       - name: source_ts_ms
+        tests: [not_null]
+
+  # ------------------------------------------------------------------------------------
+  - name: stg_driver_versions
+    description: >
+      One row per driver CHANGE EVENT, not per driver -- same shape as stg_vehicle_versions, and the
+      reasoning about deletes, suppression and intervals lives there. No longer a quiet case with
+      nothing to show: 17 c, 34 u, 17 d, 40 r measured against Bronze, 36 real changes and 12 no-op
+      updates under the tracked-attribute rule across 43 distinct entities -- driven by the
+      integration suite's disposable test drivers (tests/test_app.py), not by the simulator, which
+      never revises a driver once seeded. Feeds gold.dim_driver.
+    columns:
+      - name: driver_id
+        description: >
+          The entity this event describes, not the declared grain -- see
+          dbt/tests/assert_stg_driver_versions_unique_on_kafka_coordinate.sql for that.
+        tests: [not_null]
+      - name: full_name
+        description: From the after-image. NULL on a delete row, by design -- see stg_vehicle_versions.
+      - name: phone
+        description: >
+          Nullable on a live row and null on a delete row, for two different reasons that happen to
+          look the same: an absent phone number is a fact about the driver, and a null attribute
+          on a delete row is a fact about the event carrying no after-image.
+      - name: status
+        description: From the after-image. Null on a delete row, by design -- see stg_vehicle_versions.
+      - name: home_depot_id
+        description: >
+          NOT NULL in the OLTP (docker/oltp/init.sql:86). No not_null test here, unlike
+          stg_drivers: the OLTP's NOT NULL constraint binds a live row, and this model
+          deliberately keeps rows -- deletes -- that describe none.
+      - name: created_at
+        description: From the after-image. Null on a delete row like every other attribute above.
+      - name: updated_at
+        description: From the after-image. Null on a delete row like every other attribute above.
+      - name: bronze_op
+        description: >
+          c, u, d OR r -- all four, unlike stg_drivers' ['c', 'u', 'r']. See
+          stg_vehicle_versions.bronze_op for why keeping d is the point of this model.
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['c', 'u', 'd', 'r']
+      - name: source_ts_ms
+        tests: [not_null]
+      - name: committed_at
+        description: source_ts_ms, rendered as a timestamptz -- see stg_vehicle_versions.committed_at.
+        tests: [not_null]
+      - name: bronze_partition
+        description: Half the declared grain -- see stg_vehicle_versions.bronze_partition.
+        tests: [not_null]
+      - name: bronze_offset
+        description: >
+          The other half of the declared grain, and the column both reconciliation tests bound on
+          so a continuously-ingesting simulator cannot make them flap.
         tests: [not_null]
 
   # ------------------------------------------------------------------------------------

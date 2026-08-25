@@ -6,8 +6,8 @@
 -- Feeds:  nothing yet; stg_job_events is a sibling, not a child.
 --
 -- Ported from sql/silver/23_stg_jobs.sql. Same shape as stg_vehicles.sql; the reasoning about
--- latest-wins, the source_ts_ms::bigint cast, the before-image caveat and why there is no macro
--- all lives there.
+-- latest-wins, the source_ts_ms::bigint cast and the before-image caveat now lives in the shared
+-- scaffolding macro, dbt/macros/cdc.sql, which both this model and stg_vehicles.sql call.
 --
 -- TWO THINGS ABOUT jobs THAT ARE NOT ABOUT SQL.
 --
@@ -28,21 +28,11 @@
 -- silently exclude every job that had not finished yet, which is the classic survivorship error.
 
 WITH usable AS (
-    SELECT *,
-           coalesce(payload #>> '{after,job_id}', payload #>> '{before,job_id}') AS entity_key
-      FROM {{ source('bronze', 'raw_cdc_entities') }}
-     WHERE source_table = 'jobs'
-       AND parse_error IS NULL
+    {{ cdc_usable('jobs', 'job_id') }}
 ),
 
 latest AS (
-    SELECT DISTINCT ON (entity_key) *
-      FROM usable
-     WHERE entity_key IS NOT NULL
-     ORDER BY entity_key,
-              source_ts_ms::bigint DESC,
-              _kafka_partition DESC,
-              _kafka_offset DESC
+    {{ cdc_latest() }}
 )
 
 SELECT

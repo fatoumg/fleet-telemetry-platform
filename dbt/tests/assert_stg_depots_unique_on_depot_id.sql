@@ -3,7 +3,7 @@
 -- A singular test rather than the built-in `unique`, so every model in this layer asserts its
 -- grain the same way whether the grain is one column or several -- and so the assertion reads as
 -- a query a human can check rather than a keyword they have to trust. Severity is error
--- project-wide (dbt/dbt_project.yml:38-40): fan-out inflates every downstream number silently,
+-- project-wide (dbt/dbt_project.yml:44-46): fan-out inflates every downstream number silently,
 -- so it must break the build rather than warn into a log nobody reads.
 --
 -- BE HONEST ABOUT WHAT THIS CATCHES HERE. The model is SELECT DISTINCT ON (entity_key), which

@@ -51,3 +51,7 @@ dist/
 # Subagent-driven development scratch: ledgers, briefs, review packages.
 # Git history is the record; this is working state for an in-flight plan.
 .superpowers/
+
+# Editor config. .vscode/settings.json pins dbt.dbtPath to an absolute path that is
+# machine-specific, so it stays local rather than being shared (see CLAUDE.md, dbt section).
+.vscode/

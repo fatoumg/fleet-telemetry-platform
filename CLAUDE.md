@@ -84,6 +84,16 @@ are `DISTINCT ON` or a single-relation `GROUP BY`, where Postgres guarantees the
 a regression guard. And no grain assertion catches rows the inner join *drops*, which is why that
 wrongness is documented in the model rather than tested for.
 
+```bash
+python -m dbt.cli.main snapshot --project-dir dbt --profiles-dir dbt   # -> gold.snap_vehicles / snap_drivers
+```
+
+**`dbt build` runs snapshots too** — a snapshot is just another node in the DAG, so the polling
+interval this project's snapshots actually get is not "whenever `dbt snapshot` is run" but "every
+explicit `dbt snapshot` plus every `dbt build` anyone happens to run for any other reason." That
+makes the snapshot's effective interval irregular and dependent on who else is working in the repo,
+which is exactly the property `docs/type-2-dimensions.md` measures against CDC.
+
 ### Tests
 
 ```bash
@@ -135,11 +145,24 @@ dbt build --project-dir dbt --profiles-dir dbt --target ci
 
 The `--project-dir`/`--profiles-dir` flags are required; the profile is not in `~/.dbt`.
 
-**Check which `dbt` you are running.** A `dbt-fusion` binary in `~/.local/bin` shadows the
-pip-installed `dbt-core` on PATH, and Fusion does not support the Postgres adapter — it fails
-with *"The 'postgres' adapter is not yet supported by dbt Fusion"*, which reads like a missing
-dependency rather than the wrong executable. Use `python -m dbt.cli.main ...` to force the
-pip-installed one. CI is unaffected: it installs only `.[warehouse]`.
+**dbt Fusion cannot build this project, and the way it reaches you is the VS Code extension.**
+Fusion does not support the Postgres adapter and fails with *"The 'postgres' adapter is not yet
+supported by dbt Fusion"* — which reads like a missing dependency rather than the wrong
+executable. This warehouse is Postgres and is not going to stop being Postgres.
+
+**It is not a PATH problem, despite looking exactly like one.** Measured 2026-08-25:
+`~/.local/bin` is not on PATH at all, and bare `dbt` resolves to pip's `dbt-core` 1.12.0 in both
+PowerShell and Git Bash. The Fusion binary is `~/.local/bin/dbt.exe` — 411 MB of Rust, against
+dbt-core's 108 KB Python shim — installed alongside `dbt-wizard.exe` by the `dbtLabsInc.dbt`
+extension, which invokes it **by absolute path**. So no PATH edit reaches it; only
+`dbt.dbtPath` does, which `.vscode/settings.json` now sets to the dbt-core shim.
+
+That extension is worth watching for a second reason: it twice wrote a duplicate `profile:` key
+into `dbt/dbt_project.yml`, which makes `dbt parse` emit `DuplicateYAMLKeysDeprecation`. If you
+see a `profile:` line you did not write, `git checkout -- dbt/dbt_project.yml`.
+
+Use `python -m dbt.cli.main ...` regardless. It names the interpreter, so it cannot be
+mis-resolved by anything. CI is unaffected: it installs only `.[warehouse]`.
 
 ## Architecture
 
@@ -186,7 +209,7 @@ is the specific anti-pattern this project exists to replace.
 | `src/fleet_telemetry/transform/` | `run.py` — executes `sql/silver/*.sql` in filename order. No business logic; every rule is in the SQL |
 | `sql/silver/` | Silver as hand-written SQL (phase 3 step 1), targeting `silver_manual`. Built to be superseded by `dbt/`, and kept afterwards like `poller.py` was |
 | `docker/debezium/` | Connector config. Credentials are `${...}` placeholders filled by `connector.py` from `config.py` |
-| `dbt/` | Silver, Gold, marts — all business logic. `models/staging/` → `silver` (nine models, views: six `stg_*`, `stg_rejected_rows`, `ping_quality`, `vehicle_day`); `macros/generate_schema_name.sql` makes layer names absolute, and deleting it moves every model silently; `tests/` holds one grain assertion per model plus the geometry, reconciliation and dedup-unit assertions. `gold/` and `marts/` are still empty |
+| `dbt/` | Silver, Gold, marts — all business logic. `models/staging/` → `silver` (eleven models, views: eight `stg_*`, `stg_rejected_rows`, `ping_quality`, `vehicle_day`); `macros/generate_schema_name.sql` makes layer names absolute, and deleting it moves every model silently; `tests/` holds one grain assertion per model plus the geometry, reconciliation and dedup-unit assertions. `models/gold/` → `gold` (two Type 2 dimensions, `dim_vehicle` and `dim_driver`, table-materialised, built from `stg_vehicle_versions`/`stg_driver_versions`); `snapshots/` holds `snap_vehicles` and `snap_drivers` — dbt snapshots polling the same current-state tables the batch poller reads, kept as the CDC dimensions' comparison baseline. `marts/` is still empty |
 | `dags/` | Airflow DAGs (phase 4) |
 
 Bronze tables are owned by the Python loader, not dbt — declared in
@@ -305,6 +328,19 @@ to 1000 rows", the poller is permanently catching up, and every poll still repor
 port collision that presented as an authentication failure, the batch that stamped the previous
 flush's timestamp and backdated 169,480 rows, the sequence counters that collided on the second
 run — are worth more than the code around them. Add to them.
+
+**A Type 2 dimension can be built from after-images only.** Each version's `valid_from` is its own
+`source_ts_ms` and its `valid_to` is simply the next version's `valid_from`, both obtainable with a
+`lead()` window function over ordinary create/update/snapshot rows — no version needs to read a
+before-image body to know when it started or ended. Only a delete needs the before-image at all,
+and it contributes nothing but its own commit timestamp, to close out the version it ends. That
+narrow contract is what keeps `known-issues.md` §1's fabricated before-image defaults (`plate: ""`,
+`capacity: 0`, `created_at: 1970-01-01`) out of Gold entirely — the dimension never asks the
+question whose answer would be invented. Its necessary companion: a delete must still break the
+suppression chain rather than being silently dropped alongside genuine no-op updates, because ids
+**are** reused here (`known-issues.md` §3 measures the simulator's fixed test ids colliding across
+runs) — ten resurrections across two vehicle ids on this volume, and without that rule five of six
+lifecycles vanish silently, collapsed into whichever one is still standing.
 
 ## Naming Conventions
 
