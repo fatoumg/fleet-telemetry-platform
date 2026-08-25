@@ -145,11 +145,24 @@ dbt build --project-dir dbt --profiles-dir dbt --target ci
 
 The `--project-dir`/`--profiles-dir` flags are required; the profile is not in `~/.dbt`.
 
-**Check which `dbt` you are running.** A `dbt-fusion` binary in `~/.local/bin` shadows the
-pip-installed `dbt-core` on PATH, and Fusion does not support the Postgres adapter — it fails
-with *"The 'postgres' adapter is not yet supported by dbt Fusion"*, which reads like a missing
-dependency rather than the wrong executable. Use `python -m dbt.cli.main ...` to force the
-pip-installed one. CI is unaffected: it installs only `.[warehouse]`.
+**dbt Fusion cannot build this project, and the way it reaches you is the VS Code extension.**
+Fusion does not support the Postgres adapter and fails with *"The 'postgres' adapter is not yet
+supported by dbt Fusion"* — which reads like a missing dependency rather than the wrong
+executable. This warehouse is Postgres and is not going to stop being Postgres.
+
+**It is not a PATH problem, despite looking exactly like one.** Measured 2026-08-25:
+`~/.local/bin` is not on PATH at all, and bare `dbt` resolves to pip's `dbt-core` 1.12.0 in both
+PowerShell and Git Bash. The Fusion binary is `~/.local/bin/dbt.exe` — 411 MB of Rust, against
+dbt-core's 108 KB Python shim — installed alongside `dbt-wizard.exe` by the `dbtLabsInc.dbt`
+extension, which invokes it **by absolute path**. So no PATH edit reaches it; only
+`dbt.dbtPath` does, which `.vscode/settings.json` now sets to the dbt-core shim.
+
+That extension is worth watching for a second reason: it twice wrote a duplicate `profile:` key
+into `dbt/dbt_project.yml`, which makes `dbt parse` emit `DuplicateYAMLKeysDeprecation`. If you
+see a `profile:` line you did not write, `git checkout -- dbt/dbt_project.yml`.
+
+Use `python -m dbt.cli.main ...` regardless. It names the interpreter, so it cannot be
+mis-resolved by anything. CI is unaffected: it installs only `.[warehouse]`.
 
 ## Architecture
 
