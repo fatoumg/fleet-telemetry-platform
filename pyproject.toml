@@ -103,6 +103,19 @@ quote-style = "double"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --strict-markers"
+# WITHOUT THIS, `pytest` AND `python -m pytest` DISAGREE, AND CI RUNS THE ONE THAT FAILS.
+#
+# Only src/fleet_telemetry is packaged (see tool.hatch.build.targets.wheel), so `app` and
+# `simulator` are importable only when the repository root is on sys.path. `python -m pytest`
+# puts it there as sys.path[0]; bare `pytest` does not. So three test modules that import
+# `simulator` collected fine for anyone typing `python -m pytest` and failed with
+# ModuleNotFoundError for CI, which runs bare `pytest` -- every CI run since 2026-08-10, while
+# local runs looked green.
+#
+# NOT fixed by adding app/ and simulator/ to the wheel: they are the source system, not library
+# code, and shipping them would make an install of this package export a FastAPI app. The path
+# only needs to exist while tests run, which is exactly what this option does.
+pythonpath = ["."]
 markers = [
     "integration: needs docker services running; deselect with -m 'not integration'",
 ]

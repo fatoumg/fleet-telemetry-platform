@@ -110,6 +110,15 @@ pytest -k lateness                   # by name substring
 `tests/test_app.py` is entirely `integration` (module-level `pytestmark`). `test_config.py` and
 `test_world.py` are hermetic.
 
+**`pytest` and `python -m pytest` were not equivalent, and CI ran the one that failed.** Only
+`src/fleet_telemetry` is packaged, so `app` and `simulator` are importable only with the repo root
+on `sys.path` — `python -m pytest` puts it there, bare `pytest` does not. Three modules importing
+`simulator` therefore collected for anyone typing `python -m pytest` and raised
+`ModuleNotFoundError` in CI: **every CI run from 2026-08-10 to 2026-08-28 failed this way** while
+local runs looked green. Fixed by `pythonpath = ["."]` in `[tool.pytest.ini_options]`. Do not
+"fix" it instead by adding `app`/`simulator` to the wheel — they are the source system, not
+library code.
+
 ### Lint & format
 
 ```bash
