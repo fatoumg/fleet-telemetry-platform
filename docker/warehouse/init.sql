@@ -40,6 +40,20 @@ CREATE SCHEMA IF NOT EXISTS gold;
 CREATE SCHEMA IF NOT EXISTS marts;
 
 -- --------------------------------------------------------------------------------------
+-- truth: not a medallion layer
+-- --------------------------------------------------------------------------------------
+--
+-- What the simulator intended to emit, written by the simulator itself and read only by tests. It
+-- sits outside bronze/silver/gold/marts because it is not a stage in the pipeline -- it is the
+-- reference the pipeline is checked against, and the only one that originates outside it. Every
+-- other assertion in this project can pass while data is quietly lost, because Bronze is the
+-- earliest thing they can see and Bronze is downstream of the loss.
+--
+-- Tables are owned by src/fleet_telemetry/truth.py, per the rule at the top of this file. Note that
+-- this file only runs on an empty data directory, so that module creates the schema too.
+CREATE SCHEMA IF NOT EXISTS truth;
+
+-- --------------------------------------------------------------------------------------
 -- session defaults
 -- --------------------------------------------------------------------------------------
 
