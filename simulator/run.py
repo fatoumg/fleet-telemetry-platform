@@ -51,11 +51,18 @@ import threading
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 
 import httpx
 
 from fleet_telemetry import config
 from simulator.world import Depot, World
+
+if TYPE_CHECKING:
+    # Type-only, and the module import in main() is deliberately lazy, for the same reason every
+    # database helper here imports psycopg inside the function: importing this module must not
+    # require the warehouse client. --truth is opt-in and most runs never touch it.
+    from fleet_telemetry.truth import TruthRecorder
 
 # A reading takes a moment to reach the server: radio, mobile network, our own queueing.
 # Seconds. Phase 1 keeps this small and well-behaved; phase 3 makes it ugly. Backfill only --
@@ -275,6 +282,7 @@ def simulate(
     end: datetime,
     interval_seconds: int,
     live: bool,
+    truth: TruthRecorder | None = None,
 ) -> dict[str, int]:
     """Walk the clock from start to end, emitting pings and job transitions."""
     stats = new_stats()
@@ -299,6 +307,13 @@ def simulate(
             server_ts = buffer_max_device_ts + timedelta(
                 seconds=world.rng.randint(*TRANSMISSION_DELAY_SECONDS)
             )
+        # Truth first, then the POST. A crash between the two leaves a recorded intent with no
+        # ping, and the diff correctly reports it -- the emission genuinely did not happen. The
+        # other order would lose the record of a ping that DID go out, which is the failure that
+        # matters, because a missing truth row makes a real ping look like a phantom forever.
+        # Same shape of argument as the two commits in ingest/consumer.py:1-17.
+        if truth is not None:
+            truth.flush()
         api.post_pings(buffer, server_ts)
         stats["pings"] += len(buffer)
         buffer = []
@@ -306,7 +321,13 @@ def simulate(
 
     while now < end:
         for vehicle in world.vehicles:
-            buffer.append(take_reading(vehicle, world, now))
+            reading = take_reading(vehicle, world, now)
+            # Recorded when the reading is TAKEN, not when the batch flushes. A sequence-gap row
+            # is one the simulator forms the intent to send and then drops, so it never reaches a
+            # flush and a flush-time recorder could not see it.
+            if truth is not None:
+                truth.record(reading, now)
+            buffer.append(reading)
             buffer_max_device_ts = now
             if len(buffer) >= PINGS_PER_BATCH:
                 flush()
@@ -361,6 +382,7 @@ def simulate_forever(
     world: World,
     interval_seconds: int,
     stop: threading.Event,
+    truth: TruthRecorder | None = None,
 ) -> dict[str, int]:
     """Emit one tick per interval against the real clock until `stop` is set.
 
@@ -381,7 +403,14 @@ def simulate_forever(
     while not stop.is_set():
         now = datetime.now(UTC)
         try:
-            api.post_pings([take_reading(v, world, now) for v in world.vehicles], None)
+            readings = [take_reading(v, world, now) for v in world.vehicles]
+            # Same ordering as the backfill flush, and for the same reason: a recorded intent
+            # with no ping is a finding, a ping with no recorded intent is an unexplained phantom.
+            if truth is not None:
+                for reading in readings:
+                    truth.record(reading, now)
+                truth.flush()
+            api.post_pings(readings, None)
             stats["pings"] += len(world.vehicles)
             advance_jobs(api, world, now, stats)
             maybe_mutate(api, world, interval_seconds, stats)
@@ -499,6 +528,13 @@ def main(argv: list[str] | None = None) -> int:
         help="delete all existing pings first. Without this, runs append and sequence numbers "
         "continue from where the last run stopped.",
     )
+    parser.add_argument(
+        "--truth",
+        action="store_true",
+        help="record every intended emission to truth.intended_pings in the warehouse, so "
+        "pipeline output can be diffed against ground truth. Requires the warehouse to be up; "
+        "off by default so the simulator keeps working with only oltp and the api.",
+    )
     args = parser.parse_args(argv)
 
     if args.forever and (args.hours or args.minutes or args.live):
@@ -543,6 +579,29 @@ def main(argv: list[str] | None = None) -> int:
     for vehicle in world.vehicles:
         vehicle.sequence_no = resume_from.get(vehicle.vehicle_id, 0)
 
+    recorder = None
+    truth_conn = None
+    if args.truth:
+        # Lazy, like every other database import in this module: --truth is opt-in, and importing
+        # the simulator must not require the warehouse client.
+        from psycopg import OperationalError, connect
+
+        from fleet_telemetry import truth as truth_module
+
+        target = config.warehouse()
+        try:
+            truth_conn = connect(target.dsn(), connect_timeout=10)
+        except OperationalError as exc:
+            print(f"--truth needs the warehouse, and {target.safe_dsn()} is unreachable: {exc}")
+            print("start it with:  docker compose -f docker/docker-compose.yml up -d warehouse")
+            return 1
+        truth_module.apply(truth_conn)
+        recorder = truth_module.TruthRecorder(
+            run_id=str(uuid.uuid4()),
+            seed=args.seed,
+            sink=truth_module.postgres_sink(truth_conn),
+        )
+
     if args.forever:
         rate = len(vehicle_ids) / args.interval
         print(
@@ -564,12 +623,15 @@ def main(argv: list[str] | None = None) -> int:
             f"  expect : ~{expected:,} pings"
         )
 
+    if recorder is not None:
+        print(f"  truth  : {config.warehouse().safe_dsn()} run_id={recorder.run_id}", flush=True)
+
     started = datetime.now(UTC)
     try:
         if args.forever:
-            stats = simulate_forever(api, world, args.interval, stop)
+            stats = simulate_forever(api, world, args.interval, stop, truth=recorder)
         else:
-            stats = simulate(api, world, start, end, args.interval, args.live)
+            stats = simulate(api, world, start, end, args.interval, args.live, truth=recorder)
     except KeyboardInterrupt:
         print("\ninterrupted")
         return 130
@@ -584,6 +646,19 @@ def main(argv: list[str] | None = None) -> int:
     except httpx.HTTPError as exc:
         print(f"\ngave up talking to the API: {type(exc).__name__}: {exc}")
         return 1
+    finally:
+        # In `finally` rather than after the dispatch, so an interrupted run still lands the
+        # intent it had already recorded. A long --forever run killed with SIGTERM is the normal
+        # case, not the exception, and its truth rows are worth as much as a clean run's.
+        if recorder is not None:
+            recorder.flush()
+            print(
+                f"  truth rows     : {recorder.written:,} written "
+                f"of {recorder.recorded:,} recorded",
+                flush=True,
+            )
+        if truth_conn is not None:
+            truth_conn.close()
     elapsed = (datetime.now(UTC) - started).total_seconds()
 
     print(
