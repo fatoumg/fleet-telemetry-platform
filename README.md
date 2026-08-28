@@ -212,6 +212,27 @@ so their output is comparable. The one difference shows up in the data: backfill
 synthetic 1–8 s transmission delay, while live rows carry whatever really happened (a few
 milliseconds locally).
 
+### Recording ground truth
+
+Add `--truth` in either mode and the simulator writes every reading it intended to emit into
+`truth.intended_pings` in the warehouse, so the pipeline's output can be diffed against what was
+generated rather than merely inspected for plausibility.
+
+```bash
+python -m fleet_telemetry.truth                                  # create the table, idempotent
+python -m simulator --hours 6 --vehicles 40 --truth
+python -m dbt.cli.main build --project-dir dbt --profiles-dir dbt
+```
+
+`assert_intended_pings_reached_silver` must return **zero rows**. It is the only assertion in the
+project that compares against a reference originating outside the pipeline — every other test can
+pass while data is quietly lost, because Bronze is the earliest thing they can see and Bronze is
+downstream of the loss. See [docs/truth-harness.md](docs/truth-harness.md), including what it
+deliberately does not prove.
+
+The flag is off by default because it needs the warehouse, and the simulator otherwise runs against
+only the OLTP and the API.
+
 ## Running the transformation (phase 3)
 
 Silver as hand-written SQL, run in filename order. This is the naive version and it is meant to be

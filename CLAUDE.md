@@ -55,6 +55,8 @@ finished, or Postgres retains WAL until the disk fills.
 
 ```bash
 python -m fleet_telemetry.transform.run      # sql/silver/*.sql -> silver_manual.*
+python -m fleet_telemetry.truth              # truth schema DDL, idempotent
+python -m simulator --vehicles 40 --hours 6 --truth   # record intent while emitting
 ```
 
 Runs the hand-written Silver scripts in **filename order**, with no dependency resolution — that
@@ -132,8 +134,9 @@ python -m fleet_telemetry.profile_source
 `http://127.0.0.1:8000/docs` is the generated API browser.
 
 Simulator flags: `--vehicles`, `--hours`/`--minutes`, `--interval`, `--seed`, `--api`, `--live`,
-`--reset`. Without `--reset`, runs append and sequence numbers resume from the database — that is
-deliberate (see Key Patterns).
+`--reset`, `--truth`. Without `--reset`, runs append and sequence numbers resume from the database —
+that is deliberate (see Key Patterns). `--truth` is the only flag that needs the warehouse, and is
+off by default for that reason.
 
 ### dbt
 
@@ -204,6 +207,7 @@ is the specific anti-pattern this project exists to replace.
 | `simulator/` | `world.py` (physics, no I/O), `run.py` (clock walk + HTTP) |
 | `src/fleet_telemetry/config.py` | The only place that knows where settings come from |
 | `src/fleet_telemetry/profile_source.py` | Source-system profiler — the phase 1 deliverable |
+| `src/fleet_telemetry/truth.py` | The `truth` schema, the intended-ping row shape, the batched writer, and `TruthRecorder`. Not in `load/`, which is scoped to bronze. The only thing that gives the simulator warehouse *write* access |
 | `src/fleet_telemetry/ingest/` | `poller.py` (naive path), `connector.py` (Debezium registrar), `envelope.py` (routing/decode, no Kafka import), `consumer.py` (the CDC loop), `compare.py` (the phase 2 diff) |
 | `src/fleet_telemetry/load/` | `schema.py` (all bronze DDL), `writer.py` (the only writer of `bronze.raw_*` — the poller owns `poll_rows` and `poll_watermarks`, whose rows have no Kafka coordinate) |
 | `src/fleet_telemetry/transform/` | `run.py` — executes `sql/silver/*.sql` in filename order. No business logic; every rule is in the SQL |
@@ -341,6 +345,30 @@ suppression chain rather than being silently dropped alongside genuine no-op upd
 **are** reused here (`known-issues.md` §3 measures the simulator's fixed test ids colliding across
 runs) — ten resurrections across two vehicle ids on this volume, and without that rule five of six
 lifecycles vanish silently, collapsed into whichever one is still standing.
+
+**Ground truth is typed where Bronze is text, and the inversion is the point.** Bronze is all
+`text` because a cast inside `GENERATED ALWAYS` runs on INSERT, so one device sending `"banana"`
+would take a whole batch down — Bronze rejecting the malformed evidence it exists to keep.
+`truth.intended_pings` is written by our own code three lines before the insert, so a failing cast
+there is a bug we want loudly and immediately. Never "align" the two: doing so moves every such
+failure out of the simulator, where it is a bug report, and into the diff, where it is an
+unexplained missing row. `src/fleet_telemetry/truth.py` is deliberately not in `load/`, which
+`load/schema.py` scopes to bronze.
+
+**The truth diff is bounded by a per-run arrival frontier, and the obvious bound is quietly wrong.**
+Truth is always ahead of Silver by one pipeline traversal, so an unbounded diff always fails on
+in-flight data. But `max(stg_pings.device_ts)` is worse than useless: it spans all of Silver
+including pre-truth history, and a backfill run generates `device_ts` in the *past*
+(`start = end - span`), so the bound can sit beyond the run's own window and admit rows that have
+not arrived. `--reset` cannot rescue it — Bronze is append-only. The frontier is therefore derived
+per `run_id` from rows that actually matched, with a strict `<` because every ping in a tick shares
+one `device_ts` and a 500-ping flush lands mid-tick.
+
+**The insert into `truth.intended_pings` binds parameters by name, not position.** `latitude` and
+`longitude` are adjacent columns of the same type, so reordering a positional tuple would exchange
+them with no error, no type mismatch and no failing cast — the same silent break that moved fleet
+total distance by +2.14% with nine of nine scripts reporting ok. `_COLUMNS` is pinned to
+`IntendedPing._fields` by a hermetic test.
 
 ## Naming Conventions
 
