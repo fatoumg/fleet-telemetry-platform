@@ -174,3 +174,97 @@ sources:
             description: >
               The watermark value that caused this row to be selected. Kept so a leaked
               watermark is diagnosable after the fact rather than merely suspected.
+
+  # ------------------------------------------------------------------------------------
+  # The second source, and the first that is not bronze.
+  # ------------------------------------------------------------------------------------
+  #
+  # Note the schema resolves to bare `truth` rather than `silver_truth`: sources take their schema
+  # from the key below verbatim, because macros/generate_schema_name.sql applies only to nodes dbt
+  # BUILDS. Confirmed the same way the existing bronze source is -- see that macro's header, which
+  # lists the concatenation victims as the three model layers only.
+
+  - name: truth
+    schema: truth
+    description: >
+      What the simulator INTENDED to emit, written by the simulator itself
+      (src/fleet_telemetry/truth.py) rather than by any ingestion path. Not a medallion layer: it
+      is the reference the layers are checked against, and the only one originating outside the
+      pipeline. Every other assertion in this project can pass while data is quietly lost, because
+      Bronze is the earliest thing they can see and Bronze is downstream of the loss.
+
+      EVERY COLUMN HERE IS TYPED, the exact opposite of the all-text rule at the top of this file,
+      and the inversion is deliberate. Bronze is text because it must never reject the malformed
+      evidence it exists to keep. These values are constructed by our own code immediately before
+      the insert, so a cast that fails is a bug in the recorder and the loudest possible failure is
+      what we want. Aligning the two would move every such failure out of the simulator, where it
+      is a bug report, and into the diff, where it is an unexplained missing row.
+
+    tables:
+      - name: intended_pings
+        description: >
+          One row per reading the simulator formed the intent to send, whether or not it went out.
+          Populated only by runs started with `--truth`; a run without the flag leaves no rows, and
+          the diff then has nothing to compare. That is why it holds vacuously in CI and on a fresh
+          clone rather than failing there.
+        columns:
+          - name: ping_id
+            description: >
+              The device-generated UUID, and the ONLY join key into silver.stg_pings. It is an
+              unseeded uuid4 (simulator/run.py:218), so it cannot be recomputed from the seed --
+              a run that did not record it is unverifiable afterwards.
+            tests:
+              - not_null
+              - unique
+          - name: run_id
+            description: >
+              Which simulator process produced this row, and load-bearing for the diff's bound.
+              Two same-seed runs differ only in ping_id: sequence numbers resume from the database
+              rather than restarting, and two backfill windows OVERLAP in device_ts because each
+              walks from now-span to now. Without run_id there is no way to tell one run's arrival
+              frontier from another's, and that frontier is the whole basis of the bound.
+            tests: [not_null]
+          - name: seed
+            description: The RNG seed the run was started with. Provenance, not a key.
+            tests: [not_null]
+          - name: vehicle_id
+            description: Part of the declared grain, with run_id and sequence_no.
+            tests: [not_null]
+          - name: sequence_no
+            description: >
+              What the device claimed as its counter. Part of the declared grain, asserted in
+              tests/assert_intended_pings_unique_on_run_vehicle_and_sequence.sql.
+            tests: [not_null]
+          - name: intended_device_ts
+            description: >
+              The device_ts value actually put on the wire. Compared for EQUALITY against
+              silver.stg_pings.device_ts, so it must never be re-derived or re-rounded.
+            tests: [not_null]
+          - name: truth_ts
+            description: >
+              The real instant the reading describes. Identical to intended_device_ts on a clean
+              run; the two diverge the moment a clock-skew flag exists. Recording both is what
+              makes skew measurable rather than merely visible.
+            tests: [not_null]
+          - name: emitted
+            description: >
+              False when the intent was formed and deliberately not sent -- the sequence-gap
+              pathology, which does not exist yet. Always true today. The diff filters on it, so an
+              unemitted row is correctly NOT expected to appear in Silver.
+            tests: [not_null]
+          - name: pathology
+            description: >
+              Which flag caused this row to diverge from clean behaviour; null when clean, which is
+              every row today. No not_null test, for that reason.
+          - name: latitude
+            description: Raw degrees, WGS84, exactly as sent. NOT NULL in the OLTP.
+            tests: [not_null]
+          - name: longitude
+            description: Raw degrees, WGS84, exactly as sent. NOT NULL in the OLTP.
+            tests: [not_null]
+          - name: speed_kmh
+            description: >
+              Nullable, matching the OLTP. No not_null test: a nullable column that happens to be
+              full today is a promise nobody made.
+          - name: heading_deg
+            description: Nullable, same reasoning as speed_kmh.

@@ -308,6 +308,17 @@ services:
       OLTP_PASSWORD: ${OLTP_PASSWORD:-fleet}
       FLEET_API_TOKEN: ${FLEET_API_TOKEN:-local-dev-token}
       FLEET_API_URL: http://api:8000
+      # Read only by --truth, which the command below does not pass. Present so that adding the
+      # flag to `command:` is a one-line change rather than a debugging session.
+      #
+      # No depends_on for warehouse, deliberately. The flag is opt-in and off here, so a hard
+      # dependency would make every default `compose up simulator` wait on -- and be able to fail
+      # on -- a service it never contacts. Add the edge in the same change that adds the flag.
+      WAREHOUSE_HOST: warehouse
+      WAREHOUSE_PORT: 5432
+      WAREHOUSE_DB: ${WAREHOUSE_DB:-telemetry}
+      WAREHOUSE_USER: ${WAREHOUSE_USER:-telemetry}
+      WAREHOUSE_PASSWORD: ${WAREHOUSE_PASSWORD:-telemetry}
       TZ: UTC
     command:
       - python

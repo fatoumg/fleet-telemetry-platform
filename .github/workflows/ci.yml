@@ -86,7 +86,8 @@ jobs:
             -c "CREATE SCHEMA IF NOT EXISTS bronze;" \
             -c "CREATE SCHEMA IF NOT EXISTS silver;" \
             -c "CREATE SCHEMA IF NOT EXISTS gold;" \
-            -c "CREATE SCHEMA IF NOT EXISTS marts;"
+            -c "CREATE SCHEMA IF NOT EXISTS marts;" \
+            -c "CREATE SCHEMA IF NOT EXISTS truth;"
 
       # Bronze is owned by the Python loader, not by dbt, so these tables do not exist until
       # this runs -- and the source tests added in phase 2 would fail the build without them.
@@ -94,6 +95,17 @@ jobs:
       # vacuously on an empty table and would still catch a column that went missing.
       - name: Apply the bronze schema
         run: python -m fleet_telemetry.load.schema
+
+      # Same reasoning as bronze above. truth.intended_pings is owned by
+      # src/fleet_telemetry/truth.py, not by dbt, so it does not exist until this runs -- and
+      # `dbt build` evaluates source tests EAGERLY, so the not_null tests on it would fail the
+      # build rather than report anything useful (dbt/models/staging/_sources.yml:6-9).
+      #
+      # Empty is the correct state here: the simulator never runs in CI, so nothing writes to this
+      # table and the ground-truth diff returns no rows because every frontier is null. That is
+      # said out loud in the test itself, because a green check reads like coverage and is not.
+      - name: Apply the truth schema
+        run: python -m fleet_telemetry.truth
 
       # PROVES THE SQL PARSES AND RUNS. IT PROVES NOTHING ABOUT THE NUMBERS.
       #
